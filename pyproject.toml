@@ -6,6 +6,7 @@ authors = [{ name = "Dmitry Orlov", email = "me@mosquito.su" }]
 requires-python = ">=3.10,<4"
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["COPYING"]
 keywords = [
     "rabbitmq",
     "asyncio",
