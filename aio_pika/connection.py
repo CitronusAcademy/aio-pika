@@ -12,6 +12,7 @@ from typing import (
     Type,
     TypeVar,
     Union,
+    overload,
 )
 
 
@@ -36,6 +37,7 @@ from .tools import CallbackCollection
 
 log = get_logger(__name__)
 T = TypeVar("T")
+ConnectionType = TypeVar("ConnectionType", bound=AbstractConnection)
 
 
 class Connection(AbstractConnection):
@@ -300,6 +302,43 @@ def make_url(
         path="/" + virtualhost,
         query=kw,
     )
+
+
+@overload
+async def connect(
+    url: Union[str, URL, None] = None,
+    *,
+    host: str = "localhost",
+    port: int = 5672,
+    login: str = "guest",
+    password: str = "guest",
+    virtualhost: str = "/",
+    ssl: bool = False,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    ssl_options: Optional[SSLOptions] = None,
+    ssl_context: Optional[SSLContext] = None,
+    timeout: TimeoutType = None,
+    client_properties: Optional[FieldTable] = None,
+) -> Connection: ...
+
+
+@overload
+async def connect(
+    url: Union[str, URL, None] = None,
+    *,
+    host: str = "localhost",
+    port: int = 5672,
+    login: str = "guest",
+    password: str = "guest",
+    virtualhost: str = "/",
+    ssl: bool = False,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    ssl_options: Optional[SSLOptions] = None,
+    ssl_context: Optional[SSLContext] = None,
+    timeout: TimeoutType = None,
+    client_properties: Optional[FieldTable] = None,
+    connection_class: Type[ConnectionType] = ...,
+) -> ConnectionType: ...
 
 
 async def connect(
