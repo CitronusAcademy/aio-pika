@@ -234,6 +234,31 @@ Your own custom conversational channels or voice assistants as:
 And it also uses **aio-pika** to interact with **RabbitMQ** deep inside!
 
 
+## [aio-pika-batch](https://github.com/g-mill/aio-pika-batch)
+
+**aio-pika-batch** is a batch consumer library built on top of **aio-pika**. It provides batch collection with size and timeout flushing, per-message ACK/NACK/REQUEUE within a batch, retry tracking via `x-retry-count` header with automatic dead-letter routing, and multi-worker scaling with independent connection recovery. Consumers can be chained into fan-in pipelines to merge multiple source exchanges into a single staging queue.
+
+```python
+from aio_pika_batch import BatchConsumer, BatchConsumerSettings, MessageResult
+
+class MyConsumer(BatchConsumer):
+    async def process_messages(self, messages):
+        for msg in messages:
+            try:
+                await publish(json.loads(msg.body))
+                yield MessageResult.ACK
+            except TransientError:
+                yield MessageResult.REQUEUE
+
+consumer = MyConsumer(BatchConsumerSettings(
+    queue_name="my-queue",
+    batch_size=50,
+    batch_timeout=2.0,
+    num_workers=4,
+))
+await consumer.run()
+```
+
 ## Thanks for contributing
 
 * [@mosquito](https://github.com/mosquito) (author)
