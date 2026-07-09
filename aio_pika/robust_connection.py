@@ -1,6 +1,6 @@
 import asyncio
 from ssl import SSLContext
-from typing import Any, Optional, Tuple, Type, Union
+from typing import Any, Optional, Tuple, Type, TypeVar, Union, overload
 from weakref import WeakSet
 
 import aiormq.abc
@@ -21,6 +21,11 @@ from .log import get_logger
 from .robust_channel import RobustChannel
 from .tools import CallbackCollection
 
+
+RobustConnectionType = TypeVar(
+    "RobustConnectionType",
+    bound=AbstractRobustConnection,
+)
 
 log = get_logger(__name__)
 
@@ -256,6 +261,43 @@ class RobustConnection(Connection, AbstractRobustConnection):
             self.__reconnection_task = None
 
         return await super().close(exc)
+
+
+@overload
+async def connect_robust(
+    url: Union[str, URL, None] = None,
+    *,
+    host: str = "localhost",
+    port: int = 5672,
+    login: str = "guest",
+    password: str = "guest",
+    virtualhost: str = "/",
+    ssl: bool = False,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    ssl_options: Optional[SSLOptions] = None,
+    ssl_context: Optional[SSLContext] = None,
+    timeout: TimeoutType = None,
+    client_properties: Optional[FieldTable] = None,
+) -> RobustConnection: ...
+
+
+@overload
+async def connect_robust(
+    url: Union[str, URL, None] = None,
+    *,
+    host: str = "localhost",
+    port: int = 5672,
+    login: str = "guest",
+    password: str = "guest",
+    virtualhost: str = "/",
+    ssl: bool = False,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    ssl_options: Optional[SSLOptions] = None,
+    ssl_context: Optional[SSLContext] = None,
+    timeout: TimeoutType = None,
+    client_properties: Optional[FieldTable] = None,
+    connection_class: Type[RobustConnectionType] = ...,
+) -> RobustConnectionType: ...
 
 
 async def connect_robust(
