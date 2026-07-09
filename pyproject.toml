@@ -1,9 +1,9 @@
 [project]
 name = "aio-pika"
-version = "9.6.0"
+version = "10.0.0"
 description = "Wrapper around the aiormq for asyncio and humans"
 authors = [{ name = "Dmitry Orlov", email = "me@mosquito.su" }]
-requires-python = ">=3.10,<4"
+requires-python = ">=3.11,<4"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["COPYING"]
@@ -22,7 +22,6 @@ classifiers = [
     "Operating System :: Microsoft",
     "Operating System :: POSIX",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -36,9 +35,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "aiormq>=6.8,<7",
+    "aiormq>=7,<8",
     "yarl",
-    "exceptiongroup>=1,<2 ; python_full_version < '3.11'",
 ]
 
 [project.urls]
@@ -49,8 +47,7 @@ Documentation = "https://docs.aio-pika.com/"
 
 [dependency-groups]
 dev = [
-    "aiomisc<18; python_full_version < '3.11'",
-    "aiomisc>=18.0; python_full_version >= '3.11'",
+    "aiomisc",
     "aiomisc-pytest",
     "collective-checkdocs",
     "coverage",
@@ -83,7 +80,7 @@ module-root = ""
 source-include = ["tests/**"]
 
 [build-system]
-requires = ["uv_build>=0.9.26,<0.10.0"]
+requires = ["uv_build>=0.9.26,<0.12"]
 build-backend = "uv_build"
 
 [tool.mypy]
