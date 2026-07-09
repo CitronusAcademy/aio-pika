@@ -12,7 +12,7 @@ built on top of [aiormq](http://github.com/mosquito/aiormq/).
 It provides an object-oriented API, transparent auto-reconnects with full state
 recovery, [publisher confirms](https://www.rabbitmq.com/confirms.html),
 [transactions](https://www.rabbitmq.com/semantics.html#tx), and complete
-type-hints coverage. Python 3.10+.
+type-hints coverage. Python 3.11+.
 
 ```shell
 pip install aio-pika

@@ -27,7 +27,7 @@ If you are a newcomer to RabbitMQ, please start with the [adopted official Rabbi
 * Object oriented API.
 * Transparent auto-reconnects with complete state recovery with `connect_robust`
   (e.g. declared queues or exchanges, consuming state and bindings).
-* Python 3.10+ compatible.
+* Python 3.11+ compatible.
 * Transparent [publisher confirms](https://www.rabbitmq.com/confirms.html) support.
 * [Transactions](https://www.rabbitmq.com/semantics.html) support.
 * Complete type-hints coverage.

@@ -16,10 +16,6 @@ from typing import (
 import aiormq
 from aiormq.abc import DeliveredMessage
 
-try:
-    ExceptionGroup
-except NameError:
-    from exceptiongroup import ExceptionGroup  # type: ignore[import-not-found]
 from pamqp.common import Arguments
 
 from .abc import (
