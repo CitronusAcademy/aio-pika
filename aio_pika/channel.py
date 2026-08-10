@@ -151,15 +151,30 @@ class Channel(ChannelContext):
             or connection.is_closed
             or connection.transport is None
             or self._escalation_scheduled
-            or getattr(connection, "_channel_escalation_in_progress", False)
+            or self._connection_escalation_in_progress(connection)
         ):
             return
 
         self._escalation_scheduled = True
-        setattr(connection, "_channel_escalation_in_progress", True)
+        self._set_connection_escalation_in_progress(connection, True)
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
+
+    @staticmethod
+    def _connection_escalation_in_progress(
+        connection: AbstractConnection,
+    ) -> bool:
+        return bool(
+            getattr(connection, "_channel_escalation_in_progress", False),
+        )
+
+    @staticmethod
+    def _set_connection_escalation_in_progress(
+        connection: AbstractConnection,
+        value: bool,
+    ) -> None:
+        setattr(connection, "_channel_escalation_in_progress", value)
 
     async def _run_escalation(
         self,
@@ -181,10 +196,10 @@ class Channel(ChannelContext):
         except Exception:
             log.warning("Channel close escalation failed", exc_info=True)
         finally:
-            setattr(connection, "_channel_escalation_in_progress", False)
-            # Keep the completed task observable for callers coordinating
-            # shutdown; explicit close and finalization clear the reference.
-            pass
+            self._set_connection_escalation_in_progress(connection, False)
+            current_task = asyncio.current_task()
+            if self._escalation_task is current_task:
+                self._escalation_task = None
 
     async def close(
         self,
