@@ -578,6 +578,10 @@ class AbstractChannel(PoolInstance, ABC):
     def closed(self) -> Awaitable[Literal[True]]:
         raise NotImplementedError
 
+    def escalate_on_close(self, timeout: float = 5.0) -> None:
+        """Make independent channel closure fatal for the owning connection."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_underlay_channel(self) -> aiormq.abc.AbstractChannel:
         raise NotImplementedError
