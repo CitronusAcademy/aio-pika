@@ -1,14 +1,11 @@
 import asyncio
-import logging
-from typing import List
+from typing import Callable, List, Optional, cast
 from unittest import mock
 
 import pytest
 
 from aio_pika import Channel
-
-
-log = logging.getLogger(__name__)
+from aio_pika.abc import AbstractConnection
 
 
 class FakeConnection:
@@ -18,8 +15,21 @@ class FakeConnection:
     def __init__(self) -> None:
         self.close_called = False
         self.is_closed = False
-        self.transport: object = object()
+        self.transport: Optional[object] = object()
         self.close = mock.AsyncMock()
+
+
+async def _drain_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Yield until every callback scheduled before this point has run.
+
+    Scheduled as a sentinel via ``call_soon`` so the event loop processes
+    any task finalization / exception logging that was queued before we
+    assert on observable state.  Bounded by ``wait_for`` so a broken
+    implementation cannot hang the test.
+    """
+    drained = asyncio.Event()
+    loop.call_soon(drained.set)
+    await asyncio.wait_for(drained.wait(), timeout=3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +39,7 @@ class FakeConnection:
 
 async def test_escalate_on_close_registers_one_callback() -> None:
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     before = len(channel.close_callbacks)
     channel.escalate_on_close()
@@ -39,7 +49,7 @@ async def test_escalate_on_close_registers_one_callback() -> None:
 
 async def test_escalate_on_close_is_idempotent() -> None:
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     before = len(channel.close_callbacks)
     channel.escalate_on_close()
@@ -55,7 +65,7 @@ async def test_escalate_on_close_is_idempotent() -> None:
 
 async def test_channel_close_escalates_original_exception_once() -> None:
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
@@ -80,7 +90,7 @@ async def test_channel_close_without_exception_calls_connection_close_without_re
     None
 ):
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
@@ -108,13 +118,15 @@ async def test_channel_close_without_exception_calls_connection_close_without_re
 async def test_escalation_ignores_explicitly_closing_connection() -> None:
     connection = FakeConnection()
     connection.close_called = True
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
+    loop = asyncio.get_running_loop()
     await channel.close_callbacks(RuntimeError("boom"))
+    # Let any scheduled escalation task run before asserting it did nothing.
+    await _drain_loop(loop)
 
-    # No close task should have been created.
     assert connection.close.await_count == 0
 
 
@@ -127,15 +139,18 @@ async def test_escalation_ignores_explicitly_closing_connection() -> None:
 )
 async def test_escalation_ignores_closed_or_dead_connection(
     scenario: str,
-    dead_modifier: object,
+    dead_modifier: Callable[[FakeConnection], None],
 ) -> None:
     connection = FakeConnection()
-    dead_modifier(connection)  # type: ignore  # noqa
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    dead_modifier(connection)
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
+    loop = asyncio.get_running_loop()
     await channel.close_callbacks(RuntimeError("boom"))
+    # Let any scheduled escalation task run before asserting it did nothing.
+    await _drain_loop(loop)
 
     assert connection.close.await_count == 0
 
@@ -149,38 +164,43 @@ async def test_escalation_ignores_duplicate_callback_while_close_pending() -> ( 
     None
 ):
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
     close_started = asyncio.Event()
+    close_completed = asyncio.Event()
     release_close = asyncio.Event()
 
     async def blocking_close(*args: object, **kwargs: object) -> None:
         close_started.set()
-        await release_close.wait()
+        try:
+            await release_close.wait()
+        finally:
+            close_completed.set()
 
     connection.close = mock.AsyncMock(side_effect=blocking_close)
 
     exc = RuntimeError("independent death")
-    await channel.close_callbacks(exc)
+    first = asyncio.ensure_future(channel.close_callbacks(exc))
     await asyncio.wait_for(close_started.wait(), timeout=3.0)
 
-    # Duplicate callback while the first close is still pending.
-    await channel.close_callbacks(exc)
+    # Duplicate callback while the first close is still pending.  This must
+    # not start a second close; bounded so a non-guarding implementation
+    # fails with TimeoutError instead of hanging the test.
+    await asyncio.wait_for(channel.close_callbacks(exc), timeout=3.0)
 
     # Release the first close so the test can finish.
     release_close.set()
-    # Allow the close task to complete after release.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await asyncio.wait_for(close_completed.wait(), timeout=3.0)
+    await asyncio.wait_for(first, timeout=3.0)
 
     assert connection.close.await_count == 1
 
 
 async def test_escalation_timeout_is_bounded() -> None:
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     timeout = 0.05
     channel.escalate_on_close(timeout=timeout)
@@ -199,13 +219,20 @@ async def test_escalation_timeout_is_bounded() -> None:
 
     connection.close = mock.AsyncMock(side_effect=hanging_close)
 
+    loop = asyncio.get_running_loop()
     await channel.close_callbacks(RuntimeError("boom"))
     await asyncio.wait_for(close_started.wait(), timeout=3.0)
 
-    # The escalation close is bounded by `timeout` (0.05 s).  Even though
-    # connection.close hangs, the task must be cancelled when the bound
-    # elapses.  If the timeout is not respected this will raise TimeoutError.
+    # Measure how long after the close starts before the configured timeout
+    # (0.05 s) cancels it.  Assert the cancellation lands near that deadline
+    # (with scheduling slack) rather than on the outer 3-second wait_for.
+    started_at = loop.time()
     await asyncio.wait_for(close_cancelled.wait(), timeout=3.0)
+    elapsed = loop.time() - started_at
+
+    assert elapsed < max(timeout * 3, 0.2), (
+        f"escalation cancelled in {elapsed:.3f}s, expected ~{timeout:.3f}s"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,15 +242,19 @@ async def test_escalation_timeout_is_bounded() -> None:
 
 async def test_escalation_close_exception_is_consumed() -> None:
     connection = FakeConnection()
-    channel = Channel(connection=connection)  # type: ignore  # noqa
+    channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
 
     close_started = asyncio.Event()
+    close_completed = asyncio.Event()
 
     async def failing_close(*args: object, **kwargs: object) -> None:
         close_started.set()
-        raise OSError("connection failed")
+        try:
+            raise OSError("connection failed")
+        finally:
+            close_completed.set()
 
     connection.close = mock.AsyncMock(side_effect=failing_close)
 
@@ -237,13 +268,16 @@ async def test_escalation_close_exception_is_consumed() -> None:
     old_handler = loop.get_exception_handler()
     loop.set_exception_handler(handler)
     try:
-        await channel.close_callbacks(RuntimeError("boom"))
+        invocation = asyncio.ensure_future(
+            channel.close_callbacks(RuntimeError("boom")),
+        )
         await asyncio.wait_for(close_started.wait(), timeout=3.0)
+        await asyncio.wait_for(close_completed.wait(), timeout=3.0)
+        await asyncio.wait_for(invocation, timeout=3.0)
 
-        # Yield so the event loop processes any final task state.
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # Let the event loop deliver any "exception was never retrieved"
+        # diagnostics that were queued when the escalation task finished.
+        await _drain_loop(loop)
 
         for ctx in captured:
             msg = ctx.get("message", "")
@@ -251,7 +285,6 @@ async def test_escalation_close_exception_is_consumed() -> None:
                 f"Unhandled task exception: {ctx}"
             )
 
-        # Also assert no unhandled-task warning for the consumed exception.
         assert captured == []
     finally:
         loop.set_exception_handler(old_handler)
