@@ -213,3 +213,47 @@ class TestCaseAmqpNoConfirmsRobust(TestCaseAmqpNoConfirms):
 
 class TestCaseAmqpWithConfirmsRobust(TestCaseAmqpWithConfirms):
     pass
+
+
+async def test_robust_channel_recovers_without_escalation(connection):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    reopened = asyncio.Event()
+    channel.reopen_callbacks.add(lambda *_: reopened.set())
+    underlay = await channel.get_underlay_channel()
+    await underlay.close(RuntimeError("unexpected channel close"))
+    await asyncio.wait_for(reopened.wait(), timeout=5)
+    await channel.declare_queue(auto_delete=True)
+
+
+async def test_escalated_robust_channel_closes_connection_without_restore(connection):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    original = RuntimeError("fatal channel close")
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_exception(original)
+    restored = asyncio.Event()
+    connection_closed = asyncio.Event()
+    channel.restore = lambda: restored.set()  # type: ignore
+
+    async def close(exc=None):
+        assert exc is original
+        connection_closed.set()
+
+    connection.close = close  # type: ignore
+    await channel._on_close(closing)
+    await asyncio.wait_for(connection_closed.wait(), timeout=1)
+    assert not restored.is_set()
+
+
+async def test_explicit_robust_channel_close_does_not_escalate(connection):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    connection_closed = asyncio.Event()
+
+    async def close(exc=None):
+        connection_closed.set()
+
+    connection.close = close  # type: ignore
+    await channel.close()
+    await asyncio.sleep(0)
+    assert not connection_closed.is_set()
