@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import math
 import warnings
 from abc import ABC
 from types import TracebackType
@@ -65,6 +66,9 @@ class Channel(ChannelContext):
     EXCHANGE_CLASS = Exchange
 
     _channel: Optional[UnderlayChannel]
+    _escalation_timeout: Optional[float]
+    _escalation_task: Optional[asyncio.Task[None]]
+    _escalation_scheduled: bool
 
     def __init__(
         self,
@@ -97,6 +101,10 @@ class Channel(ChannelContext):
 
         self._channel: Optional[UnderlayChannel] = None
         self._channel_number = channel_number
+        self._escalation_timeout = None
+        self._escalation_task = None
+        self._escalation_scheduled = False
+        self._explicit_close = False
 
         self.close_callbacks = CallbackCollection(self)
         self.return_callbacks = CallbackCollection(self)
@@ -123,10 +131,60 @@ class Channel(ChannelContext):
             return True
         return channel.channel.is_closed
 
+    def escalate_on_close(self, timeout: float = 5.0) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a positive finite number")
+        if self._escalation_timeout is not None:
+            return
+        self._escalation_timeout = timeout
+        self.close_callbacks.add(self._escalate_on_close)
+
+    async def _escalate_on_close(
+        self,
+        _: Optional[AbstractChannel],
+        exc: Optional[BaseException],
+    ) -> None:
+        connection = self._connection
+        if (
+            self._explicit_close
+            or connection.close_called
+            or connection.is_closed
+            or connection.transport is None
+            or self._escalation_scheduled
+        ):
+            return
+
+        self._escalation_scheduled = True
+        self._escalation_task = asyncio.create_task(
+            self._run_escalation(connection, exc),
+        )
+
+    async def _run_escalation(
+        self,
+        connection: AbstractConnection,
+        exc: Optional[BaseException],
+    ) -> None:
+        try:
+            close = (
+                connection.close(exc) if exc is not None else connection.close()
+            )
+            await asyncio.wait_for(close, self._escalation_timeout or 5.0)
+        except asyncio.CancelledError:
+            log.debug("Channel close escalation cancelled", exc_info=True)
+        except Exception:
+            log.warning("Channel close escalation failed", exc_info=True)
+        finally:
+            self._escalation_task = None
+
     async def close(
         self,
         exc: Optional[aiormq.abc.ExceptionType] = None,
     ) -> None:
+        self._explicit_close = True
+        if self._escalation_task is not None:
+            self._escalation_task.cancel()
+            self._escalation_task = None
+
         if not self.is_initialized:
             log.warning("Channel not opened")
             return
