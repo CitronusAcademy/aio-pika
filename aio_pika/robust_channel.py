@@ -110,6 +110,15 @@ class RobustChannel(Channel, AbstractRobustChannel):
             self.__restored.clear()
             return exc
 
+        if self._escalation_timeout is not None:
+            # An opted-in channel is terminal when its independent transport
+            # dies.  The inherited callback already scheduled the owning
+            # connection close; do not let robust recovery hide that failure.
+            self.__restored.clear()
+            if not self._closed.done():
+                self._closed.set_result(True)
+            return exc
+
         in_restore_state = not self.__restored.is_set()
         self.__restored.clear()
 
@@ -133,6 +142,7 @@ class RobustChannel(Channel, AbstractRobustChannel):
         await self.reopen_callbacks()
 
     async def _on_open(self) -> None:
+        self._escalation_scheduled = False
         if not hasattr(self, "default_exchange"):
             await super()._on_open()
 

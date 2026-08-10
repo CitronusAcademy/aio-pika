@@ -151,10 +151,12 @@ class Channel(ChannelContext):
             or connection.is_closed
             or connection.transport is None
             or self._escalation_scheduled
+            or getattr(connection, "_channel_escalation_in_progress", False)
         ):
             return
 
         self._escalation_scheduled = True
+        setattr(connection, "_channel_escalation_in_progress", True)
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
@@ -165,6 +167,11 @@ class Channel(ChannelContext):
         exc: Optional[BaseException],
     ) -> None:
         try:
+            # Mark the owning connection before yielding to its close
+            # coroutine, so simultaneous escalations observe the close state.
+            close_method = getattr(connection, "close", None)
+            if getattr(close_method, "__self__", None) is connection:
+                connection._close_called = True
             close = (
                 connection.close(exc) if exc is not None else connection.close()
             )
@@ -174,7 +181,10 @@ class Channel(ChannelContext):
         except Exception:
             log.warning("Channel close escalation failed", exc_info=True)
         finally:
-            self._escalation_task = None
+            setattr(connection, "_channel_escalation_in_progress", False)
+            # Keep the completed task observable for callers coordinating
+            # shutdown; explicit close and finalization clear the reference.
+            pass
 
     async def close(
         self,
