@@ -2,6 +2,7 @@ import asyncio
 from functools import partial
 
 import pytest
+from unittest.mock import AsyncMock
 from aiormq import ChannelNotFoundEntity
 from aiormq.exceptions import ChannelPreconditionFailed
 
@@ -225,35 +226,71 @@ async def test_robust_channel_recovers_without_escalation(connection):
     await channel.declare_queue(auto_delete=True)
 
 
-async def test_escalated_robust_channel_closes_connection_without_restore(connection):
+async def test_escalated_robust_channel_closes_connection_without_restore(
+    connection,
+):
     channel: RobustChannel = await connection.channel()  # type: ignore
     channel.escalate_on_close(timeout=1)
     original = RuntimeError("fatal channel close")
     closing = asyncio.get_running_loop().create_future()
     closing.set_exception(original)
-    restored = asyncio.Event()
+    restore = AsyncMock()
     connection_closed = asyncio.Event()
-    channel.restore = lambda: restored.set()  # type: ignore
-
-    async def close(exc=None):
-        assert exc is original
-        connection_closed.set()
-
-    connection.close = close  # type: ignore
+    connection.close = AsyncMock()  # type: ignore
+    connection.close.side_effect = (  # type: ignore
+        lambda exc=None: connection_closed.set()
+    )
+    channel.restore = restore  # type: ignore
     await channel._on_close(closing)
     await asyncio.wait_for(connection_closed.wait(), timeout=1)
-    assert not restored.is_set()
+    connection.close.assert_awaited_once_with(original)  # type: ignore
+    restore.assert_not_awaited()
+
+
+async def test_escalated_robust_channel_ready_waiter_terminates(connection):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    original = RuntimeError("fatal ready close")
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_exception(original)
+    connection.close = AsyncMock()  # type: ignore
+    await channel._on_close(closing)
+    await asyncio.wait_for(channel.closed(), timeout=1)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.ready(), timeout=0.1)
+
+
+async def test_escalated_robust_channel_replacement_dies_again(connection):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    close = AsyncMock()
+    restore = AsyncMock()
+    connection.close = close  # type: ignore
+    channel.restore = restore  # type: ignore
+    first = asyncio.get_running_loop().create_future()
+    first_exc = RuntimeError("first death")
+    first.set_exception(first_exc)
+    await channel._on_close(first)
+    first_task = channel._escalation_task
+    assert first_task is not None
+    await asyncio.wait_for(first_task, timeout=1)
+    channel._escalation_scheduled = False
+    second_exc = RuntimeError("replacement death")
+    second = asyncio.get_running_loop().create_future()
+    second.set_exception(second_exc)
+    await channel._on_close(second)
+    second_task = channel._escalation_task
+    assert second_task is not None
+    await asyncio.wait_for(second_task, timeout=1)
+    assert close.await_count == 2
+    assert close.await_args_list[1].args[0] is second_exc
+    restore.assert_not_awaited()
 
 
 async def test_explicit_robust_channel_close_does_not_escalate(connection):
     channel: RobustChannel = await connection.channel()  # type: ignore
     channel.escalate_on_close(timeout=1)
-    connection_closed = asyncio.Event()
-
-    async def close(exc=None):
-        connection_closed.set()
-
-    connection.close = close  # type: ignore
-    await channel.close()
-    await asyncio.sleep(0)
-    assert not connection_closed.is_set()
+    connection.close = AsyncMock()  # type: ignore
+    close_task = asyncio.create_task(channel.close())
+    await asyncio.wait_for(close_task, timeout=1)
+    connection.close.assert_not_awaited()  # type: ignore
