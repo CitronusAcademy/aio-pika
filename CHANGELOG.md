@@ -1,3 +1,10 @@
+Unreleased
+----------
+
+* Fork: replaced the real-PyPI trusted-publishing workflow with a manual
+  `workflow_dispatch` workflow that publishes to our private index at
+  `pypi.citronus.pro`
+
 9.6.0
 -----
 

@@ -36,7 +36,19 @@ If you are a newcomer to RabbitMQ, please start with the [adopted official Rabbi
 ## Installation
 
 ```shell
-pip install aio-pika
+pip install --index-url https://citronus:eK4aechoano3ahhahdoph6chohtia6th@pypi.citronus.pro/simple aio-pika
+```
+
+Or add it as an extra index alongside PyPI in `pip.conf` / `uv`:
+
+```toml
+[[tool.uv.index]]
+name = "aio-pika"
+url = "https://citronus:eK4aechoano3ahhahdoph6chohtia6th@pypi.citronus.pro/simple"
+explicit = true
+
+[tool.uv.sources]
+aio-pika = { index = "aio-pika" }
 ```
 
 
