@@ -115,6 +115,42 @@ async def test_channel_close_without_exception_calls_connection_close_without_re
 # ---------------------------------------------------------------------------
 
 
+async def test_explicit_channel_close_does_not_close_connection() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+    channel._channel = mock.Mock()
+    channel._channel.close = mock.AsyncMock()
+
+    await channel.close()
+
+    assert connection.close.await_count == 0
+    assert channel._channel.close.await_count == 1
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+async def test_escalate_on_close_rejects_invalid_timeout(
+    timeout: float,
+) -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+
+    with pytest.raises(ValueError, match="positive finite"):
+        channel.escalate_on_close(timeout)
+
+    assert len(channel.close_callbacks) == 1
+
+
+async def test_escalate_on_close_preserves_first_timeout() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+
+    channel.escalate_on_close(timeout=1.0)
+    channel.escalate_on_close(timeout=2.0)
+
+    assert channel._escalation_timeout == 1.0
+
+
 async def test_escalation_ignores_explicitly_closing_connection() -> None:
     connection = FakeConnection()
     connection.close_called = True

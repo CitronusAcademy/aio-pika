@@ -314,6 +314,9 @@ class Channel(ChannelContext):
         with contextlib.suppress(AttributeError, RuntimeError):
             # might raise AttributeError if Exception was raised in __init__
             # or RuntimeError if the event loop is already closed
+            if self._escalation_task is not None:
+                self._escalation_task.cancel()
+                self._escalation_task = None
             if not self._closed.done():
                 self._closed.set_result(True)
 
