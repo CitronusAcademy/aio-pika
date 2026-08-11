@@ -39,6 +39,8 @@ from .transaction import Transaction
 
 log = get_logger(__name__)
 
+_CONNECTION_CLOSE_CLEANUP_TIMEOUT = 0.1
+
 
 class ChannelContext(AsyncContextManager, AbstractChannel, ABC):
     async def __aenter__(self) -> "AbstractChannel":
@@ -217,9 +219,25 @@ class Channel(ChannelContext):
 
     async def _wait_for_connection_close(self) -> None:
         task = self._connection_close_task
-        if task is not None:
+        if task is None:
+            return
+
+        done, _ = await asyncio.wait(
+            {task},
+            timeout=_CONNECTION_CLOSE_CLEANUP_TIMEOUT,
+        )
+        if done:
             await asyncio.gather(task, return_exceptions=True)
             self._clear_connection_close_task(task)
+            return
+
+        task.cancel()
+        if task.done():
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            task.add_done_callback(self._clear_connection_close_task)
+        if self._connection_close_task is task:
+            self._connection_close_task = None
 
     async def close(
         self,
