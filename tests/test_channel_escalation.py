@@ -323,16 +323,12 @@ async def test_escalation_timeout_is_bounded() -> None:
 
     hang = asyncio.Event()
     close_started = asyncio.Event()
-    close_cancelled = asyncio.Event()
     close_finished = asyncio.Event()
 
     async def hanging_close(*args: object, **kwargs: object) -> None:
         close_started.set()
         try:
             await hang.wait()
-        except asyncio.CancelledError:
-            close_cancelled.set()
-            raise
         finally:
             close_finished.set()
 
@@ -342,16 +338,69 @@ async def test_escalation_timeout_is_bounded() -> None:
     await channel.close_callbacks(RuntimeError("boom"))
     await asyncio.wait_for(close_started.wait(), timeout=3.0)
 
-    # Measure how long after the close starts before the configured timeout
-    # (0.05 s) cancels it.  Assert the cancellation lands near that deadline
-    # (with scheduling slack) rather than on the outer 3-second wait_for.
+    # The escalation deadline must finish orchestration without cancelling the
+    # underlying close operation, which owns the connection's terminal state.
     started_at = loop.time()
-    await asyncio.wait_for(close_cancelled.wait(), timeout=3.0)
+    task = channel._escalation_task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=3.0)
     elapsed = loop.time() - started_at
 
-    assert elapsed < max(timeout * 3, 0.2), (
-        f"escalation cancelled in {elapsed:.3f}s, expected ~{timeout:.3f}s"
+    assert elapsed < max(timeout * 10, 1.0), (
+        f"escalation finished in {elapsed:.3f}s, expected ~{timeout:.3f}s"
     )
+    assert not close_finished.is_set()
+
+    hang.set()
+    await asyncio.wait_for(close_finished.wait(), timeout=3.0)
+    await channel.close()
+    assert connection.close.await_count == 1
+    assert channel._connection_close_task is None
+
+
+async def test_escalation_timeout_late_exception_is_consumed() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    captured: List[dict] = []
+
+    async def failing_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await release_close.wait()
+        raise OSError("late connection failure")
+
+    connection.close = mock.AsyncMock(side_effect=failing_close)
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: captured.append(context))
+    try:
+        await channel.close_callbacks(RuntimeError("boom"))
+        await asyncio.wait_for(close_started.wait(), timeout=3.0)
+        task = channel._escalation_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=3.0)
+        release_close.set()
+        await _drain_loop(loop)
+        assert channel._connection_close_task is None
+        assert captured == []
+    finally:
+        loop.set_exception_handler(old_handler)
+
+
+async def test_escalation_child_cancellation_is_consumed() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+    connection.close = mock.AsyncMock(side_effect=asyncio.CancelledError)
+
+    await channel.close_callbacks(RuntimeError("boom"))
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert channel._escalation_task is None
+    assert channel._connection_close_task is None
 
 
 async def test_completed_escalation_can_run_again() -> None:
