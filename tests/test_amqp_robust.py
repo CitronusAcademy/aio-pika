@@ -226,6 +226,22 @@ async def test_robust_channel_recovers_without_escalation(connection):
     await channel.declare_queue(auto_delete=True)
 
 
+async def test_escalated_robust_channel_preserves_connection_cancellation(
+    connection,
+):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    restore = AsyncMock()
+    channel.restore = restore  # type: ignore
+    closing = asyncio.get_running_loop().create_future()
+    closing.cancel()
+
+    await channel._on_close(closing)
+
+    assert not channel._closed.done()
+    restore.assert_not_awaited()
+
+
 async def test_escalated_robust_channel_closes_connection_without_restore(
     connection,
 ):
