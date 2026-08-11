@@ -199,6 +199,56 @@ async def test_escalation_ignores_closed_or_dead_connection(
 # ---------------------------------------------------------------------------
 
 
+async def test_channel_close_clears_cancelled_escalation_state() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+
+    channel._escalation_scheduled = True
+    channel._escalation_task = asyncio.create_task(asyncio.sleep(10))
+    await channel.close()
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert channel._escalation_task is None
+    assert not channel._escalation_scheduled
+
+
+async def test_explicit_close_wins_escalation_before_task_starts() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+    channel._escalation_task = asyncio.create_task(
+        channel._run_escalation(connection, RuntimeError("boom")),
+    )
+
+    await channel.close()
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.close.await_count == 0
+    assert not channel._escalation_scheduled
+
+
+async def test_explicit_close_wins_started_escalation_race() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def delayed_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await release_close.wait()
+
+    connection.close = mock.AsyncMock(side_effect=delayed_close)
+    await channel.close_callbacks(RuntimeError("boom"))
+    await asyncio.wait_for(close_started.wait(), timeout=3.0)
+    await channel.close()
+    release_close.set()
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.close.await_count == 1
+
+
 async def test_escalation_ignores_duplicate_callback_while_close_pending() -> (  # noqa: E501
     None
 ):

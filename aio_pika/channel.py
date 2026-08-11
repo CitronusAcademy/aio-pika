@@ -165,9 +165,11 @@ class Channel(ChannelContext):
         exc: Optional[BaseException],
     ) -> None:
         try:
-            # Claim ownership before yielding to the connection close
-            # coroutine, so simultaneous escalations produce one close.
-            if connection.close_called:
+            # Explicit channel close wins if it races this task before the
+            # ownership claim. Claim ownership before yielding to the
+            # connection close coroutine, so simultaneous escalations produce
+            # one close.
+            if self._explicit_close or connection.close_called:
                 return
             connection._mark_close_called()
             close = (
@@ -188,9 +190,13 @@ class Channel(ChannelContext):
         exc: Optional[aiormq.abc.ExceptionType] = None,
     ) -> None:
         self._explicit_close = True
-        if self._escalation_task is not None:
-            self._escalation_task.cancel()
+        task = self._escalation_task
+        if task is not None:
+            task.cancel()
             self._escalation_task = None
+            # Cancellation may prevent the task from ever entering its
+            # finally block, so clear the scheduling state here as well.
+            self._escalation_scheduled = False
 
         if not self.is_initialized:
             log.warning("Channel not opened")
