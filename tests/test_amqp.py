@@ -1185,6 +1185,20 @@ class TestCaseAmqp(TestCaseAmqpBase):
         with pytest.raises(aiormq.exceptions.ChannelInvalidStateError):
             await channel.set_qos(100)
 
+    async def test_channel_escalation_closes_broker_connection(
+        self,
+        connection: aio_pika.Connection,
+        channel: aio_pika.Channel,
+        declare_queue,
+    ):
+        channel.escalate_on_close(timeout=5.0)
+
+        with pytest.raises(aio_pika.exceptions.ChannelClosed):
+            await declare_queue("amq.restricted_queue_name", auto_delete=True)
+
+        await asyncio.wait_for(connection.closed(), timeout=5.0)
+        assert connection.is_closed
+
     async def test_declaration_result(
         self,
         channel: aio_pika.Channel,
