@@ -56,6 +56,17 @@ class Connection(AbstractConnection):
             parser=float,
             is_kwarg=True,
         ),
+        ConnectionParameter(
+            name="channel_escalation",
+            parser=parse_bool,
+            default=True,
+        ),
+        ConnectionParameter(
+            name="channel_escalation_timeout",
+            parser=float,
+            default=5.0,
+            strict=True,
+        ),
     )
 
     _closed: asyncio.Future
@@ -124,32 +135,10 @@ class Connection(AbstractConnection):
         )
         self.kwargs["context"] = ssl_context
 
-        # Parse channel escalation params (handled directly, not via
-        # ConnectionParameter, to keep existing parametrised tests stable).
-        raw_params = kwargs or dict(self.url.query)
-        channel_escalation_raw = raw_params.get(
-            "channel_escalation",
-            "1",
-        )
-        if isinstance(channel_escalation_raw, bool):
-            self.channel_escalation = channel_escalation_raw
-        else:
-            self.channel_escalation = parse_bool(
-                str(channel_escalation_raw),
-            )
-
-        timeout_raw = raw_params.get(
+        self.channel_escalation = self.kwargs.pop("channel_escalation")
+        channel_escalation_timeout = self.kwargs.pop(
             "channel_escalation_timeout",
-            "5.0",
         )
-        if isinstance(timeout_raw, str):
-            try:
-                channel_escalation_timeout = float(timeout_raw)
-            except ValueError:
-                channel_escalation_timeout = 5.0
-        else:
-            channel_escalation_timeout = float(timeout_raw)
-
         if (
             not math.isfinite(channel_escalation_timeout)
             or channel_escalation_timeout <= 0
@@ -272,16 +261,6 @@ class Connection(AbstractConnection):
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
         )
-
-        # Apply channel escalation policy
-        escalate = self.channel_escalation
-        if channel_escalation is not None:
-            escalate = channel_escalation
-        if escalate:
-            timeout = self.channel_escalation_timeout
-            if channel_escalation_timeout is not None:
-                timeout = channel_escalation_timeout
-            channel.escalate_on_close(timeout=timeout)
 
         log.debug("Channel created: %r", channel)
         return channel

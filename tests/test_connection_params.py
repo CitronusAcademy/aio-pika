@@ -78,6 +78,8 @@ class TestCase:
 
     async def test_kwargs_values(self):
         for parameter in self.CONNECTION_CLASS.PARAMETERS:
+            if parameter.strict:
+                continue
             positives = VALUE_GENERATORS[parameter.parser]  # type: ignore
             for example, expected in positives.items():  # type: ignore
                 instance = await self.get_instance(

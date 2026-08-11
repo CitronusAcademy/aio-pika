@@ -769,8 +769,9 @@ class UnderlayConnection:
 class ConnectionParameter:
     name: str
     parser: Callable[[str], Any]
-    default: Optional[str] = None
+    default: Any = None
     is_kwarg: bool = False
+    strict: bool = False
 
     def parse(self, value: Optional[str]) -> Any:
         if value is None:
@@ -778,6 +779,8 @@ class ConnectionParameter:
         try:
             return self.parser(value)
         except ValueError:
+            if self.strict:
+                raise
             return self.default
 
 

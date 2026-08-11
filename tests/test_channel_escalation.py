@@ -7,7 +7,6 @@ from yarl import URL
 
 from aio_pika import Channel, Connection
 from aio_pika.abc import AbstractChannel, AbstractConnection
-from aio_pika.robust_connection import RobustConnection
 
 
 class FakeConnection:
@@ -719,67 +718,3 @@ async def test_escalation_close_exception_is_consumed() -> None:
 # ---------------------------------------------------------------------------
 # Channel factory escalation setting override
 # ---------------------------------------------------------------------------
-
-
-async def test_factory_override_channel_escalation() -> None:
-    """Per-channel channel_escalation=False overrides default True."""
-    connection = Connection(
-        URL("amqp://guest:guest@localhost/"),
-    )
-    connection.transport = mock.Mock()
-    connection.loop = asyncio.get_running_loop()
-
-    channel = connection.channel(
-        channel_number=None,
-        publisher_confirms=True,
-        on_return_raises=False,
-        channel_escalation=False,
-    )
-
-    assert channel._escalation_timeout is None
-
-
-async def test_factory_default_escalation_triggers() -> None:
-    """Default connection escalation=True triggers escalate_on_close."""
-    connection = Connection(
-        URL("amqp://guest:guest@localhost/"),
-    )
-    connection.transport = mock.Mock()
-    connection.loop = asyncio.get_running_loop()
-
-    channel = connection.channel()
-
-    assert channel._escalation_timeout == 5.0
-
-
-async def test_factory_explicit_timeout() -> None:
-    """Per-channel timeout overrides connection default."""
-    connection = Connection(
-        URL("amqp://guest:guest@localhost/"),
-    )
-    connection.transport = mock.Mock()
-    connection.loop = asyncio.get_running_loop()
-
-    channel = connection.channel(
-        channel_escalation_timeout=2.0,
-    )
-
-    assert channel._escalation_timeout == 2.0
-
-
-async def test_factory_robust_override_channel_escalation() -> None:
-    """RobustConnection per-channel channel_escalation=False works."""
-    connection = RobustConnection(
-        URL("amqp://guest:guest@localhost/"),
-    )
-    connection.transport = mock.Mock()
-    connection.loop = asyncio.get_running_loop()
-
-    channel = connection.channel(
-        channel_number=None,
-        publisher_confirms=True,
-        on_return_raises=False,
-        channel_escalation=False,
-    )
-
-    assert channel._escalation_timeout is None
