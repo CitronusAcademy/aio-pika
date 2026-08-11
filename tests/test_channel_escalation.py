@@ -404,6 +404,43 @@ async def test_late_connection_close_exception_is_consumed() -> None:
         loop.set_exception_handler(old_handler)
 
 
+async def test_channel_close_logs_connection_close_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    release_child = asyncio.Event()
+    close_started = asyncio.Event()
+    sentinel = RuntimeError("child close failure")
+
+    async def failing_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await release_child.wait()
+        raise sentinel
+
+    connection.close = mock.AsyncMock(side_effect=failing_close)
+
+    await channel.close_callbacks(RuntimeError("channel failure"))
+    await asyncio.wait_for(close_started.wait(), timeout=3.0)
+
+    task = channel._escalation_task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=3.0)
+
+    release_child.set()
+    with caplog.at_level("WARNING", logger="aio_pika.channel"):
+        await asyncio.wait_for(channel.close(), timeout=1.0)
+
+    assert any(
+        "Channel close cleanup failed" in record.message
+        and record.exc_info is not None
+        and record.exc_info[1] is sentinel
+        for record in caplog.records
+    )
+
+
 # ---------------------------------------------------------------------------
 # Concurrency guards
 # ---------------------------------------------------------------------------

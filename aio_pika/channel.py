@@ -42,6 +42,18 @@ log = get_logger(__name__)
 _CONNECTION_CLOSE_CLEANUP_TIMEOUT = 0.1
 
 
+def _log_gather_exception(result: object, context: str) -> None:
+    if isinstance(result, BaseException) and not isinstance(
+        result,
+        asyncio.CancelledError,
+    ):
+        log.warning(
+            "%s failed",
+            context,
+            exc_info=(type(result), result, result.__traceback__),
+        )
+
+
 class ChannelContext(AsyncContextManager, AbstractChannel, ABC):
     async def __aenter__(self) -> "AbstractChannel":
         if not self.is_initialized:
@@ -227,13 +239,15 @@ class Channel(ChannelContext):
             timeout=_CONNECTION_CLOSE_CLEANUP_TIMEOUT,
         )
         if done:
-            await asyncio.gather(task, return_exceptions=True)
+            result = await asyncio.gather(task, return_exceptions=True)
+            _log_gather_exception(result[0], "Channel close cleanup")
             self._clear_connection_close_task(task)
             return
 
         task.cancel()
         if task.done():
-            await asyncio.gather(task, return_exceptions=True)
+            result = await asyncio.gather(task, return_exceptions=True)
+            _log_gather_exception(result[0], "Channel close cleanup")
         else:
             task.add_done_callback(self._clear_connection_close_task)
         if self._connection_close_task is task:
@@ -247,7 +261,8 @@ class Channel(ChannelContext):
         task = self._escalation_task
         if task is not None:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            result = await asyncio.gather(task, return_exceptions=True)
+            _log_gather_exception(result[0], "Channel close escalation cleanup")
             self._escalation_task = None
             self._escalation_scheduled = False
 
