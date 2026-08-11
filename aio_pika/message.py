@@ -572,29 +572,37 @@ class ProcessContext(AbstractProcessContext):
     ) -> None:
         if not exc_type:
             if not self.ignore_processed or not self.message.processed:
-                await self.message.ack()
+                try:
+                    await self.message.ack()
+                except ChannelInvalidStateError:
+                    log.warning(
+                        "Ack is not sent for message %r since channel "
+                        "is closed",
+                        self.message,
+                    )
 
             return
 
         if not self.ignore_processed or not self.message.processed:
             if self.reject_on_redelivered and self.message.redelivered:
-                if not self.message.channel.is_closed:
+                try:
+                    await self.message.reject(requeue=False)
+                except ChannelInvalidStateError:
+                    log.warning(
+                        "Message %r was redelivered and reject is not sent "
+                        "since channel is closed",
+                        self.message,
+                    )
+                else:
                     log.info(
                         "Message %r was redelivered and will be rejected",
                         self.message,
                     )
-                    await self.message.reject(requeue=False)
-                    return
-                log.warning(
-                    "Message %r was redelivered and reject is not sent "
-                    "since channel is closed",
-                    self.message,
-                )
             else:
-                if not self.message.channel.is_closed:
+                try:
                     await self.message.reject(requeue=self.requeue)
-                    return
-                log.warning("Reject is not sent since channel is closed")
+                except ChannelInvalidStateError:
+                    log.warning("Reject is not sent since channel is closed")
 
 
 __all__ = (

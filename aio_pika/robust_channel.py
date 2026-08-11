@@ -33,6 +33,8 @@ class RobustChannel(Channel, AbstractRobustChannel):
     EXCHANGE_CLASS: Type[Exchange] = RobustExchange
 
     RESTORE_RETRY_DELAY: int = 2
+    RESTORE_TIMEOUT: TimeoutType = 5
+    RESTORE_RETRY_ATTEMPTS: int = 5
 
     _exchanges: DefaultDict[str, AbstractRobustExchange]
     _queues: DefaultDict[str, Set[RobustQueue]]
@@ -94,7 +96,32 @@ class RobustChannel(Channel, AbstractRobustChannel):
             if self.__restored.is_set():
                 return
 
-            await self.reopen()
+            for attempt in range(1, self.RESTORE_RETRY_ATTEMPTS + 1):
+                try:
+                    await asyncio.wait_for(
+                        self.reopen(),
+                        timeout=self.RESTORE_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "Restoring channel %r timed out after %s seconds "
+                        "(attempt %s/%s)",
+                        self,
+                        self.RESTORE_TIMEOUT,
+                        attempt,
+                        self.RESTORE_RETRY_ATTEMPTS,
+                    )
+                    if attempt == self.RESTORE_RETRY_ATTEMPTS:
+                        # Give up on this channel alone instead of blocking
+                        # every other channel's restore() forever; the
+                        # caller's own failure handling (full reconnect at
+                        # the connection level, or a logged OneShotCallback
+                        # error) takes over from here.
+                        raise
+                    await asyncio.sleep(self.RESTORE_RETRY_DELAY)
+                else:
+                    break
+
             self.__restored.set()
 
     async def _on_close(
