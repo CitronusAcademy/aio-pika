@@ -163,7 +163,7 @@ class Channel(ChannelContext):
             return
 
         self._escalation_scheduled = True
-        mark_close_called = getattr(connection, '_mark_close_called', None)
+        mark_close_called = getattr(connection, "_mark_close_called", None)
         if mark_close_called is not None:
             mark_close_called()
         self._escalation_task = asyncio.create_task(
@@ -246,16 +246,10 @@ class Channel(ChannelContext):
         self._explicit_close = True
         task = self._escalation_task
         if task is not None:
-            if self._connection_close_task is None:
-                task.cancel()
-                self._escalation_task = None
-                # Cancellation may prevent the task from ever entering its
-                # finally block, so clear the scheduling state here as well.
-                self._escalation_scheduled = False
-            else:
-                await asyncio.shield(task)
-                self._escalation_task = None
-                self._escalation_scheduled = False
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._escalation_task = None
+            self._escalation_scheduled = False
             await self._wait_for_connection_close()
         else:
             await self._wait_for_connection_close()
