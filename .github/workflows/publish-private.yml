@@ -22,6 +22,3 @@ jobs:
         env:
           UV_PUBLISH_USERNAME: ${{ secrets.PYPI_USERNAME }}
           UV_PUBLISH_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-
-      - name: Echo password
-        run: echo ${{ secrets.PYPI_PASSWORD }} ${{ secrets.PYPI_USERNAME }}
