@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import math
 from ssl import SSLContext
 from types import TracebackType
 from typing import (
@@ -17,7 +18,7 @@ from typing import (
 
 
 import aiormq.abc
-from aiormq.connection import parse_int
+from aiormq.connection import parse_bool, parse_int
 from pamqp.common import FieldTable
 from yarl import URL
 
@@ -122,6 +123,42 @@ class Connection(AbstractConnection):
             kwargs or dict(self.url.query),
         )
         self.kwargs["context"] = ssl_context
+
+        # Parse channel escalation params (handled directly, not via
+        # ConnectionParameter, to keep existing parametrised tests stable).
+        raw_params = kwargs or dict(self.url.query)
+        channel_escalation_raw = raw_params.get(
+            "channel_escalation",
+            "1",
+        )
+        if isinstance(channel_escalation_raw, bool):
+            self.channel_escalation = channel_escalation_raw
+        else:
+            self.channel_escalation = parse_bool(
+                str(channel_escalation_raw),
+            )
+
+        timeout_raw = raw_params.get(
+            "channel_escalation_timeout",
+            "5.0",
+        )
+        if isinstance(timeout_raw, str):
+            try:
+                channel_escalation_timeout = float(timeout_raw)
+            except ValueError:
+                channel_escalation_timeout = 5.0
+        else:
+            channel_escalation_timeout = float(timeout_raw)
+
+        if (
+            not math.isfinite(channel_escalation_timeout)
+            or channel_escalation_timeout <= 0
+        ):
+            raise ValueError(
+                "channel_escalation_timeout must be a positive finite number",
+            )
+        self.channel_escalation_timeout = channel_escalation_timeout
+
         self.close_callbacks = CallbackCollection(self)
         self.connected: asyncio.Event = asyncio.Event()
 
@@ -167,6 +204,9 @@ class Connection(AbstractConnection):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: Optional[bool] = None,
+        channel_escalation_timeout: Optional[float] = None,
     ) -> AbstractChannel:
         """Coroutine which returns new instance of :class:`Channel`.
 
@@ -232,6 +272,16 @@ class Connection(AbstractConnection):
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
         )
+
+        # Apply channel escalation policy
+        escalate = self.channel_escalation
+        if channel_escalation is not None:
+            escalate = channel_escalation
+        if escalate:
+            timeout = self.channel_escalation_timeout
+            if channel_escalation_timeout is not None:
+                timeout = channel_escalation_timeout
+            channel.escalate_on_close(timeout=timeout)
 
         log.debug("Channel created: %r", channel)
         return channel
