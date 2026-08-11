@@ -250,9 +250,8 @@ class Channel(ChannelContext):
             await asyncio.gather(task, return_exceptions=True)
             self._escalation_task = None
             self._escalation_scheduled = False
-            await self._wait_for_connection_close()
-        else:
-            await self._wait_for_connection_close()
+
+        await self._wait_for_connection_close()
 
         if not self.is_initialized:
             log.warning("Channel not opened")

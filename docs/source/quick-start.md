@@ -23,15 +23,28 @@ default exchange.
 
 ## Escalating independent channel failures
 
-By default, a channel failure is isolated to that channel. For channels whose
-failure must terminate their owning connection, explicitly opt in:
+By default, a channel failure is isolated to that channel. Escalation is not
+enabled automatically for every channel. For a specific channel whose failure
+must terminate its owning connection, explicitly opt in:
 
 ```python
 channel.escalate_on_close(timeout=5.0)
 ```
 
-The timeout bounds the asynchronous close of the owning connection. If the
-broker provides a channel exception, it is forwarded to `connection.close()`.
+The timeout bounds how long escalation waits for the owning connection to
+close and applies only to this channel's escalation handling. The underlying
+close task may continue briefly after this wait and is cleaned up separately.
+The timeout defaults to 5 seconds and can be configured independently for each
+opted-in channel. If the broker provides a channel exception, it is forwarded
+to `connection.close()`.
+
+```python
+channel.escalate_on_close(timeout=10.0)
+```
+
+The default behavior remains unchanged for channels that do not call this
+method.
+
 An ordinary channel becomes terminal after an independent failure. A robust
 channel keeps its normal automatic recovery unless this option is enabled;
 with the option enabled, an independent failure is terminal and skips restore.
