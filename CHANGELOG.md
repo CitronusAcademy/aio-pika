@@ -1,8 +1,13 @@
 Unreleased
 ----------
 
-* Added opt-in `Channel.escalate_on_close()` for bounded escalation of
-  independent channel failures to the owning connection.
+* Added automatic channel escalation by default: unexpected independent
+  channel failures close the owning connection, affecting every channel that
+  shares it. Robust connections recover by reconnecting and restoring channels;
+  pass `channel_escalation=False` to opt out for an individual channel. The
+  compatibility method `Channel.escalate_on_close()` remains available as a
+  secondary compatibility interface. This is an intentional Citronus fork
+  policy and diverges from upstream aio-pika.
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`

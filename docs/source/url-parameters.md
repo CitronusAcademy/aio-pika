@@ -43,6 +43,10 @@ pass parameters in URL query-string format.
   This option is supported by `asyncio.DefaultEventLoopPolicy` and available since python 3.8.
   :::
 
+* `channel_escalation` (`true`/`yes`/`y`/`enable`/`on`/`enabled`/`1` means `True`, otherwise `False`) - enables automatic escalation of unexpected independent channel failures to the owning connection. Enabled by default. Explicit channel or connection shutdown is excluded. Because channels share a connection, one escalation affects every channel on that connection; robust connections then reconnect and restore channels.
+
+* `channel_escalation_timeout` (`float`-like) - positive finite number of seconds, default `5.0`. Bounds how long escalation waits for connection close handling; it does not forcibly complete every underlying transport close.
+
 * `happy_eyeballs_delay` (`float`-like) - if given, enables Happy Eyeballs for this connection.
   It should be a floating-point number representing the amount of time in seconds to wait for a connection attempt
   to complete, before starting the next attempt in parallel. This is the "Connection Attempt Delay" as defined in
@@ -78,6 +82,8 @@ For `aio_pika.RobustConnection` class is applicable all `aio_pika.Connection` re
 * `amqp://username:password@hostname/vhost?name=connection%20name&heartbeat=60&happy_eyeballs_delay=0.25`
 
 * `amqps://username:password@hostname/vhost?reconnect_interval=5&fail_fast=1`
+
+* `amqp://username:password@hostname/vhost?channel_escalation=false`
 
 * `amqps://username:password@hostname/vhost?cafile=/path/to/ca.pem`
 

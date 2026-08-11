@@ -23,44 +23,33 @@ default exchange.
 
 ## Escalating independent channel failures
 
-By default, a channel failure is isolated to that channel. Escalation is not
-enabled automatically for every channel. For a specific channel whose failure
-must terminate its owning connection, explicitly opt in:
+Unexpected independent channel failures close the owning connection by default.
+This fork's policy is automatic: a failure on one channel affects every channel
+sharing that connection. With a robust connection, the connection then follows
+its normal reconnect and channel-restoration flow.
 
 ```python
-channel.escalate_on_close(timeout=5.0)
+# Unexpected independent channel failures close the owning connection by default.
+connection = await aio_pika.connect_robust(
+    url,
+    channel_escalation=True,
+    channel_escalation_timeout=5.0,
+)
+
+# Deliberately preserve isolated/legacy behavior for this channel.
+legacy_channel = connection.channel(channel_escalation=False)
 ```
 
-The timeout bounds how long escalation waits for the owning connection to
-close and applies only to this channel's escalation handling. The underlying
-close task may continue briefly after this wait and is cleaned up separately.
-The timeout defaults to 5 seconds and can be configured independently for each
-opted-in channel. If the broker provides a channel exception, it is forwarded
-to `connection.close()`.
+`channel_escalation` defaults to `True`. Pass `False` when creating an
+individual channel to opt that channel out while leaving the connection-wide
+policy enabled for other channels. Explicit channel or connection shutdown is
+not an independent failure and does not trigger escalation.
 
-```python
-channel.escalate_on_close(timeout=10.0)
-```
-
-The default behavior remains unchanged for channels that do not call this
-method.
-
-An ordinary channel becomes terminal after an independent failure. A robust
-channel keeps its normal automatic recovery unless this option is enabled;
-with the option enabled, an independent failure is terminal and skips restore.
-
-Explicit channel or connection shutdown does not trigger escalation. Publisher
-channels are unaffected unless they explicitly call `escalate_on_close()`.
-Multiple opted-in channels on one connection coordinate so the owning
-connection close is initiated only once.
-
-```python
-# The default robust behavior remains automatic recovery.
-robust_channel = await connection.channel()  # connect_robust() connection
-
-# Opt in only for channels whose independent failure is fatal.
-robust_channel.escalate_on_close(timeout=5.0)
-```
+`channel_escalation_timeout` is the maximum time escalation waits for the
+owning connection's close handling. It bounds escalation waiting; it does not
+forcibly complete every underlying transport close. Cleanup and robust
+recovery may therefore continue after the timeout. This is an intentional
+Citronus fork policy and is not the upstream aio-pika default.
 
 ## Asynchronous message processing
 
