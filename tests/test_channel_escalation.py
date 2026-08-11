@@ -189,13 +189,14 @@ async def test_escalation_ignores_closed_connection() -> None:
 
 
 async def test_escalation_ignores_dead_transport() -> None:
-    """A channel whose connection has no transport must not attempt escalation."""
+    """A channel whose connection has no transport
+    must not attempt escalation."""
     connection = FakeConnection()
     connection.transport = None
     channel = Channel(connection=cast(AbstractConnection, connection))
     channel.escalate_on_close()
 
-    await channel.close_callbacks(RuntimeError('transport already dead'))
+    await channel.close_callbacks(RuntimeError("transport already dead"))
     await _drain_loop(asyncio.get_running_loop())
 
     assert connection.close.await_count == 0
@@ -221,7 +222,9 @@ async def test_escalation_ignores_dead_transport_during_reconnect() -> None:
     assert not channel._escalation_scheduled
 
 
-async def test_existing_abstract_connection_subclass_remains_instantiable() -> None:
+async def test_existing_abstract_connection_subclass_remains_instantiable() -> (  # noqa: E501
+    None
+):
     """A concrete subclass that was valid before this feature must remain
     instantiable after the feature is added.  The test fails while
     _mark_close_called / _reset_close_called are abstract methods and passes
