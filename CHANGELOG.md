@@ -1,6 +1,8 @@
 Unreleased
 ----------
 
+* Added opt-in `Channel.escalate_on_close()` for bounded escalation of
+  independent channel failures to the owning connection.
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`

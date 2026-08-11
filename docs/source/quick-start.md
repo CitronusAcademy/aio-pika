@@ -21,6 +21,34 @@ default exchange.
 :language: python
 ```
 
+## Escalating independent channel failures
+
+By default, a channel failure is isolated to that channel. For channels whose
+failure must terminate their owning connection, explicitly opt in:
+
+```python
+channel.escalate_on_close(timeout=5.0)
+```
+
+The timeout bounds the asynchronous close of the owning connection. If the
+broker provides a channel exception, it is forwarded to `connection.close()`.
+An ordinary channel becomes terminal after an independent failure. A robust
+channel keeps its normal automatic recovery unless this option is enabled;
+with the option enabled, an independent failure is terminal and skips restore.
+
+Explicit channel or connection shutdown does not trigger escalation. Publisher
+channels are unaffected unless they explicitly call `escalate_on_close()`.
+Multiple opted-in channels on one connection coordinate so the owning
+connection close is initiated only once.
+
+```python
+# The default robust behavior remains automatic recovery.
+robust_channel = await connection.channel()  # connect_robust() connection
+
+# Opt in only for channels whose independent failure is fatal.
+robust_channel.escalate_on_close(timeout=5.0)
+```
+
 ## Asynchronous message processing
 
 Consume messages using a callback function instead of an async iterator.
