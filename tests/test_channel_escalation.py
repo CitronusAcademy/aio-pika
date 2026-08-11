@@ -1,12 +1,12 @@
 import asyncio
-from typing import List, Optional, cast
+from typing import Awaitable, List, Literal, Optional, cast
 from unittest import mock
 
 import pytest
 from yarl import URL
 
 from aio_pika import Channel, Connection
-from aio_pika.abc import AbstractConnection
+from aio_pika.abc import AbstractChannel, AbstractConnection
 
 
 class FakeConnection:
@@ -188,17 +188,193 @@ async def test_escalation_ignores_closed_connection() -> None:
     assert connection.close.await_count == 0
 
 
-async def test_escalation_closes_connection_without_transport() -> None:
+async def test_escalation_ignores_dead_transport() -> None:
+    """A channel whose connection has no transport must not attempt escalation."""
     connection = FakeConnection()
+    connection.transport = None
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+
+    await channel.close_callbacks(RuntimeError('transport already dead'))
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.close.await_count == 0
+    assert not channel._escalation_scheduled
+
+
+async def test_escalation_ignores_dead_transport_during_reconnect() -> None:
+    """A robust connection in the reconnect window has transport=None
+    but close_called=False and is_closed=False. Escalation must not proceed."""
+    connection = FakeConnection()
+    connection.close_called = False
+    connection.is_closed = False
     connection.transport = None
     channel = Channel(connection=cast(AbstractConnection, connection))
     channel.escalate_on_close(timeout=5.0)
 
-    await channel.close_callbacks(RuntimeError("boom"))
-    await _drain_loop(asyncio.get_running_loop())
+    loop = asyncio.get_running_loop()
+    await channel.close_callbacks(RuntimeError("channel died during reconnect"))
+    await _drain_loop(loop)
 
-    assert connection.close.await_count == 1
-    assert connection.close_called
+    assert not connection.close_called
+    assert connection.close.await_count == 0
+    assert not channel._escalation_scheduled
+
+
+async def test_existing_abstract_connection_subclass_remains_instantiable() -> None:
+    """A concrete subclass that was valid before this feature must remain
+    instantiable after the feature is added.  The test fails while
+    _mark_close_called / _reset_close_called are abstract methods and passes
+    once they are removed from the abc."""
+    loop = asyncio.get_running_loop()
+
+    class MinimalConnection(AbstractConnection):  # type: ignore[misc]
+        """Minimal concrete subclass that does NOT implement
+        _mark_close_called or _reset_close_called."""
+
+        def __init__(self, url: URL) -> None:
+            self._closed = loop.create_future()
+
+        @property
+        def is_closed(self) -> bool:
+            raise NotImplementedError
+
+        @property
+        def close_called(self) -> bool:
+            raise NotImplementedError
+
+        async def close(  # type: ignore[override]
+            self,
+            exc: object = None,
+        ) -> None:
+            raise NotImplementedError
+
+        def closed(self) -> Awaitable[Literal[True]]:
+            raise NotImplementedError
+
+        async def connect(self, timeout: object = None) -> None:
+            raise NotImplementedError
+
+        def channel(  # type: ignore[override]
+            self,
+            channel_number: object = None,
+            publisher_confirms: bool = True,
+            on_return_raises: bool = False,
+        ) -> AbstractChannel:
+            raise NotImplementedError
+
+        async def ready(self) -> None:
+            raise NotImplementedError
+
+        async def __aenter__(self) -> AbstractConnection:
+            raise NotImplementedError
+
+        async def __aexit__(self, *args: object) -> None:
+            raise NotImplementedError
+
+        async def update_secret(  # type: ignore[override]
+            self,
+            new_secret: str,
+            **kwargs: object,
+        ) -> object:
+            raise NotImplementedError
+
+    conn = MinimalConnection(url=URL("amqp://guest:guest@localhost/"))
+    assert conn is not None
+
+
+async def test_channel_close_does_not_hang_after_escalation_timeout() -> None:
+    """After escalation times out, channel.close() must complete within
+    a bounded deadline even when the child connection.close() task is
+    still running (because _wait_for_connection_close must not await
+    a never-ending child task without a timeout)."""
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    hang = asyncio.Event()
+    close_started = asyncio.Event()
+
+    async def hanging_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await hang.wait()
+
+    connection.close = mock.AsyncMock(side_effect=hanging_close)
+
+    loop = asyncio.get_running_loop()
+    captured: List[dict] = []
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: captured.append(context))
+    try:
+        await channel.close_callbacks(RuntimeError("boom"))
+        await asyncio.wait_for(close_started.wait(), timeout=3.0)
+
+        # Wait for escalation timeout to fire
+        task = channel._escalation_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=3.0)
+
+        # After escalation timed out, _connection_close_task is still set
+        # to the hanging child task.
+        assert channel._connection_close_task is not None
+
+        # This must not hang — currently it hangs because
+        # _wait_for_connection_close awaits the never-ending child task
+        # without a timeout.
+        await asyncio.wait_for(channel.close(), timeout=1.0)
+
+        assert connection.close.await_count == 1
+        assert channel._connection_close_task is None
+        assert captured == []
+    finally:
+        loop.set_exception_handler(old_handler)
+
+
+async def test_late_connection_close_exception_is_consumed() -> None:
+    """A late exception raised by the child connection.close() task after
+    the escalation timeout must be consumed (not leaked to the event loop
+    exception handler)."""
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    release_child = asyncio.Event()
+    close_started = asyncio.Event()
+    sentinel = RuntimeError("child close failure")
+    captured: List[dict] = []
+
+    async def failing_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await release_child.wait()
+        raise sentinel
+
+    connection.close = mock.AsyncMock(side_effect=failing_close)
+
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: captured.append(context))
+    try:
+        await channel.close_callbacks(RuntimeError("boom"))
+        await asyncio.wait_for(close_started.wait(), timeout=3.0)
+
+        task = channel._escalation_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=3.0)
+
+        # Start cleanup.  In the current implementation this blocks on
+        # _wait_for_connection_close which awaits the child task.
+        close_call = asyncio.create_task(channel.close())
+
+        # Release the child task so it can raise its sentinel.
+        release_child.set()
+
+        await asyncio.wait_for(close_call, timeout=1.0)
+        await _drain_loop(loop)
+
+        assert channel._connection_close_task is None
+        assert captured == []
+    finally:
+        loop.set_exception_handler(old_handler)
 
 
 # ---------------------------------------------------------------------------
