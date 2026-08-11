@@ -18,6 +18,9 @@ class FakeConnection:
         self.transport: Optional[object] = object()
         self.close = mock.AsyncMock()
 
+    def _mark_close_called(self) -> None:
+        self.close_called = True
+
 
 async def _drain_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Yield until every callback scheduled before this point has run.

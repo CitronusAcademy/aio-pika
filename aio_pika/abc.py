@@ -814,6 +814,10 @@ class AbstractConnection(PoolInstance, ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def _mark_close_called(self) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     async def close(self, exc: ExceptionType = asyncio.CancelledError) -> None:
         raise NotImplementedError
 

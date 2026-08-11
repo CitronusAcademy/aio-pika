@@ -151,30 +151,13 @@ class Channel(ChannelContext):
             or connection.is_closed
             or connection.transport is None
             or self._escalation_scheduled
-            or self._connection_escalation_in_progress(connection)
         ):
             return
 
         self._escalation_scheduled = True
-        self._set_connection_escalation_in_progress(connection, True)
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
-
-    @staticmethod
-    def _connection_escalation_in_progress(
-        connection: AbstractConnection,
-    ) -> bool:
-        return bool(
-            getattr(connection, "_channel_escalation_in_progress", False),
-        )
-
-    @staticmethod
-    def _set_connection_escalation_in_progress(
-        connection: AbstractConnection,
-        value: bool,
-    ) -> None:
-        setattr(connection, "_channel_escalation_in_progress", value)
 
     async def _run_escalation(
         self,
@@ -182,11 +165,11 @@ class Channel(ChannelContext):
         exc: Optional[BaseException],
     ) -> None:
         try:
-            # Mark the owning connection before yielding to its close
-            # coroutine, so simultaneous escalations observe the close state.
-            close_method = getattr(connection, "close", None)
-            if getattr(close_method, "__self__", None) is connection:
-                connection._close_called = True
+            # Claim ownership before yielding to the connection close
+            # coroutine, so simultaneous escalations produce one close.
+            if connection.close_called:
+                return
+            connection._mark_close_called()
             close = (
                 connection.close(exc) if exc is not None else connection.close()
             )
@@ -196,7 +179,6 @@ class Channel(ChannelContext):
         except Exception:
             log.warning("Channel close escalation failed", exc_info=True)
         finally:
-            self._set_connection_escalation_in_progress(connection, False)
             current_task = asyncio.current_task()
             if self._escalation_task is current_task:
                 self._escalation_task = None
