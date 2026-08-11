@@ -142,7 +142,6 @@ class RobustChannel(Channel, AbstractRobustChannel):
         await self.reopen_callbacks()
 
     async def _on_open(self) -> None:
-        self._escalation_scheduled = False
         if not hasattr(self, "default_exchange"):
             await super()._on_open()
 

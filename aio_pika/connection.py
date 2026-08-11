@@ -70,16 +70,22 @@ class Connection(AbstractConnection):
     def _mark_close_called(self) -> None:
         self._close_called = True
 
+    def _reset_close_called(self) -> None:
+        self._close_called = False
+
     async def close(
         self,
         exc: Optional[aiormq.abc.ExceptionType] = ConnectionClosed,
     ) -> None:
         transport, self.transport = self.transport, None
         self._close_called = True
-        if not transport:
-            return
-        await transport.close(exc)
-        if not self._closed.done():
+        if transport:
+            try:
+                await transport.close(exc)
+            finally:
+                if not self._closed.done():
+                    self._closed.set_result(True)
+        elif not self._closed.done():
             self._closed.set_result(True)
 
     def closed(self) -> Awaitable[Literal[True]]:

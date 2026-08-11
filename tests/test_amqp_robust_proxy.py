@@ -1151,6 +1151,7 @@ async def test_multiple_escalated_channels_close_connection_once(connection):
         )
 
     assert close.await_count == 1
+    assert close.await_args is not None
     assert close.await_args.args[0] is exc
 
 
@@ -1161,23 +1162,30 @@ async def test_channel_death_during_reconnect_finishes_without_restore_hang(
     channel.escalate_on_close(timeout=1)
     restore = AsyncMock()
     close = AsyncMock()
-    reconnecting = asyncio.create_task(connection.reconnect())
-    await asyncio.sleep(0)
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocking_close(*args, **kwargs):
+        close_started.set()
+        await release_close.wait()
+
+    close.side_effect = blocking_close
     exc = RuntimeError("channel death during reconnect")
     closing = asyncio.get_running_loop().create_future()
     closing.set_exception(exc)
 
-    with (
-        patch.object(channel, "restore", restore),
-        patch.object(connection, "close", close),
-    ):
-        await channel._on_close(closing)
-        task = channel._escalation_task
-        assert task is not None
-        await asyncio.wait_for(task, timeout=1)
+    async with connection._reconnect_lock:
+        with (
+            patch.object(channel, "restore", restore),
+            patch.object(connection, "close", close),
+        ):
+            await channel._on_close(closing)
+            await asyncio.wait_for(close_started.wait(), timeout=1)
+            task = channel._escalation_task
+            assert task is not None
+            release_close.set()
+            await asyncio.wait_for(task, timeout=1)
 
-    reconnecting.cancel()
-    await asyncio.gather(reconnecting, return_exceptions=True)
     restore.assert_not_awaited()
     close.assert_awaited_once_with(exc)
 

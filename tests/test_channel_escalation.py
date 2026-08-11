@@ -1,10 +1,11 @@
 import asyncio
-from typing import Callable, List, Optional, cast
+from typing import List, Optional, cast
 from unittest import mock
 
 import pytest
+from yarl import URL
 
-from aio_pika import Channel
+from aio_pika import Channel, Connection
 from aio_pika.abc import AbstractConnection
 
 
@@ -20,6 +21,9 @@ class FakeConnection:
 
     def _mark_close_called(self) -> None:
         self.close_called = True
+
+    def _reset_close_called(self) -> None:
+        self.close_called = False
 
 
 async def _drain_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -169,19 +173,9 @@ async def test_escalation_ignores_explicitly_closing_connection() -> None:
     assert connection.close.await_count == 0
 
 
-@pytest.mark.parametrize(
-    "scenario,dead_modifier",
-    [
-        ("is_closed", lambda c: setattr(c, "is_closed", True)),
-        ("no_transport", lambda c: setattr(c, "transport", None)),
-    ],
-)
-async def test_escalation_ignores_closed_or_dead_connection(
-    scenario: str,
-    dead_modifier: Callable[[FakeConnection], None],
-) -> None:
+async def test_escalation_ignores_closed_connection() -> None:
     connection = FakeConnection()
-    dead_modifier(connection)
+    connection.is_closed = True
     channel = Channel(connection=cast(AbstractConnection, connection))
 
     channel.escalate_on_close(timeout=5.0)
@@ -192,6 +186,19 @@ async def test_escalation_ignores_closed_or_dead_connection(
     await _drain_loop(loop)
 
     assert connection.close.await_count == 0
+
+
+async def test_escalation_closes_connection_without_transport() -> None:
+    connection = FakeConnection()
+    connection.transport = None
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=5.0)
+
+    await channel.close_callbacks(RuntimeError("boom"))
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.close.await_count == 1
+    assert connection.close_called
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +225,10 @@ async def test_explicit_close_wins_escalation_before_task_starts() -> None:
     channel = Channel(connection=cast(AbstractConnection, connection))
     channel.escalate_on_close()
     channel._escalation_task = asyncio.create_task(
-        channel._run_escalation(connection, RuntimeError("boom")),
+        channel._run_escalation(
+            cast(AbstractConnection, connection),
+            RuntimeError("boom"),
+        ),
     )
 
     await channel.close()
@@ -242,9 +252,13 @@ async def test_explicit_close_wins_started_escalation_race() -> None:
     connection.close = mock.AsyncMock(side_effect=delayed_close)
     await channel.close_callbacks(RuntimeError("boom"))
     await asyncio.wait_for(close_started.wait(), timeout=3.0)
-    await channel.close()
-    release_close.set()
+
+    explicit_close = asyncio.create_task(channel.close())
     await _drain_loop(asyncio.get_running_loop())
+    assert not explicit_close.done()
+
+    release_close.set()
+    await asyncio.wait_for(explicit_close, timeout=3.0)
 
     assert connection.close.await_count == 1
 
@@ -287,6 +301,19 @@ async def test_escalation_ignores_duplicate_callback_while_close_pending() -> ( 
     assert connection.close.await_count == 1
 
 
+async def test_connection_close_marks_closed_after_cancel() -> None:
+    connection = Connection(url=URL("amqp://guest:guest@localhost/"))
+    transport = mock.Mock()
+    transport.close = mock.AsyncMock(side_effect=asyncio.CancelledError)
+    connection.transport = transport
+
+    with pytest.raises(asyncio.CancelledError):
+        await connection.close(RuntimeError("close cancelled"))
+
+    assert connection.is_closed
+    assert connection.transport is None
+
+
 async def test_escalation_timeout_is_bounded() -> None:
     connection = FakeConnection()
     channel = Channel(connection=cast(AbstractConnection, connection))
@@ -297,6 +324,7 @@ async def test_escalation_timeout_is_bounded() -> None:
     hang = asyncio.Event()
     close_started = asyncio.Event()
     close_cancelled = asyncio.Event()
+    close_finished = asyncio.Event()
 
     async def hanging_close(*args: object, **kwargs: object) -> None:
         close_started.set()
@@ -305,6 +333,8 @@ async def test_escalation_timeout_is_bounded() -> None:
         except asyncio.CancelledError:
             close_cancelled.set()
             raise
+        finally:
+            close_finished.set()
 
     connection.close = mock.AsyncMock(side_effect=hanging_close)
 

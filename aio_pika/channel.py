@@ -152,12 +152,12 @@ class Channel(ChannelContext):
             self._explicit_close
             or connection.close_called
             or connection.is_closed
-            or connection.transport is None
             or self._escalation_scheduled
         ):
             return
 
         self._escalation_scheduled = True
+        connection._mark_close_called()
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
@@ -168,19 +168,17 @@ class Channel(ChannelContext):
         exc: Optional[BaseException],
     ) -> None:
         try:
-            # Explicit channel close wins if it races this task before the
-            # ownership claim. Claim ownership before yielding to the
-            # connection close coroutine, so simultaneous escalations produce
-            # one close.
-            if self._explicit_close or connection.close_called:
+            if self._explicit_close:
                 return
-            connection._mark_close_called()
             close = (
                 connection.close(exc) if exc is not None else connection.close()
             )
             await asyncio.wait_for(close, self._escalation_timeout or 5.0)
         except asyncio.CancelledError:
             log.debug("Channel close escalation cancelled", exc_info=True)
+        except asyncio.TimeoutError:
+            connection._reset_close_called()
+            log.warning("Channel close escalation timed out", exc_info=True)
         except Exception:
             log.warning("Channel close escalation failed", exc_info=True)
         finally:
@@ -196,11 +194,17 @@ class Channel(ChannelContext):
         self._explicit_close = True
         task = self._escalation_task
         if task is not None:
-            task.cancel()
-            self._escalation_task = None
-            # Cancellation may prevent the task from ever entering its
-            # finally block, so clear the scheduling state here as well.
-            self._escalation_scheduled = False
+            if not self._connection.close_called:
+                task.cancel()
+                self._escalation_task = None
+                # Cancellation may prevent the task from ever entering its
+                # finally block, so clear the scheduling state here as well.
+                self._escalation_scheduled = False
+            else:
+                await asyncio.shield(task)
+                task = None
+                self._escalation_task = None
+                self._escalation_scheduled = False
 
         if not self.is_initialized:
             log.warning("Channel not opened")
