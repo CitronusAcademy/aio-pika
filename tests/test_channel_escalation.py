@@ -324,6 +324,23 @@ async def test_escalation_timeout_is_bounded() -> None:
     )
 
 
+async def test_completed_escalation_can_run_again() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close()
+
+    await channel.close_callbacks(RuntimeError("first death"))
+    await _drain_loop(asyncio.get_running_loop())
+    assert connection.close.await_count == 1
+
+    connection.close_called = False
+    connection.is_closed = False
+    await channel.close_callbacks(RuntimeError("second death"))
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.close.await_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Exception consumption
 # ---------------------------------------------------------------------------

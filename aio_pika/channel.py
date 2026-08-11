@@ -144,6 +144,9 @@ class Channel(ChannelContext):
         _: Optional[AbstractChannel],
         exc: Optional[BaseException],
     ) -> None:
+        if isinstance(exc, asyncio.CancelledError):
+            return
+
         connection = self._connection
         if (
             self._explicit_close
@@ -184,6 +187,7 @@ class Channel(ChannelContext):
             current_task = asyncio.current_task()
             if self._escalation_task is current_task:
                 self._escalation_task = None
+                self._escalation_scheduled = False
 
     async def close(
         self,
