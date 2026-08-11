@@ -1199,6 +1199,155 @@ class TestCaseAmqp(TestCaseAmqpBase):
         await asyncio.wait_for(connection.closed(), timeout=5.0)
         assert connection.is_closed
 
+    async def test_default_channel_escalation_closes_active_consumer(
+        self,
+        connection: aio_pika.Connection,
+    ):
+        connection_closed = asyncio.Event()
+        consumer_closed = asyncio.Event()
+        message_received = asyncio.Event()
+        second_message_received = asyncio.Event()
+        message_count = 0
+
+        connection.close_callbacks.add(lambda *_: connection_closed.set())
+        consumer_channel = await self.create_channel(connection)
+        consumer_channel.close_callbacks.add(
+            lambda *_: consumer_closed.set(),
+        )
+        queue = await consumer_channel.declare_queue(auto_delete=True)
+
+        async def consume(message: AbstractIncomingMessage):
+            nonlocal message_count
+            message_count += 1
+            message_received.set()
+            if message_count == 2:
+                second_message_received.set()
+            await message.ack()
+
+        await queue.consume(consume)
+        await consumer_channel.default_exchange.publish(
+            Message(b"consumer-alive"),
+            routing_key=queue.name,
+        )
+        await asyncio.wait_for(message_received.wait(), timeout=5)
+
+        failing_channel = await self.create_channel(connection)
+        with pytest.raises(aio_pika.exceptions.ChannelClosed):
+            await failing_channel.declare_queue(
+                "amq.restricted_queue_name",
+                auto_delete=True,
+            )
+
+        await asyncio.wait_for(connection_closed.wait(), timeout=5)
+        await asyncio.wait_for(consumer_closed.wait(), timeout=5)
+        if isinstance(connection, aio_pika.RobustConnection):
+            assert not connection.close_called
+            await asyncio.wait_for(connection.ready(), timeout=15)
+            await asyncio.wait_for(consumer_channel.ready(), timeout=15)
+            await consumer_channel.default_exchange.publish(
+                Message(b"consumer-recovered"),
+                routing_key=queue.name,
+            )
+            await asyncio.wait_for(
+                second_message_received.wait(),
+                timeout=15,
+            )
+        else:
+            await asyncio.wait_for(connection.closed(), timeout=5)
+            assert connection.is_closed
+
+    async def test_channel_escalation_can_opt_out_for_consumer(
+        self,
+        connection: aio_pika.Connection,
+    ):
+        connection_closed = asyncio.Event()
+        consumer_closed = asyncio.Event()
+        message_received = asyncio.Event()
+
+        connection.close_callbacks.add(lambda *_: connection_closed.set())
+        consumer_channel = await connection.channel(
+            channel_escalation=False,
+        )
+        consumer_channel.close_callbacks.add(
+            lambda *_: consumer_closed.set(),
+        )
+        queue = await consumer_channel.declare_queue(auto_delete=True)
+
+        async def consume(message: AbstractIncomingMessage):
+            message_received.set()
+            await message.ack()
+
+        await queue.consume(consume)
+        await consumer_channel.default_exchange.publish(
+            Message(b"consumer-alive"),
+            routing_key=queue.name,
+        )
+        await asyncio.wait_for(message_received.wait(), timeout=5)
+
+        with pytest.raises(aio_pika.exceptions.ChannelClosed):
+            await consumer_channel.declare_queue(
+                "amq.restricted_queue_name",
+                auto_delete=True,
+            )
+
+        await asyncio.wait_for(consumer_closed.wait(), timeout=5)
+        assert not connection.is_closed
+        await asyncio.wait_for(connection.ready(), timeout=15)
+        verification_channel = await connection.channel()
+        verification_queue = await verification_channel.declare_queue(
+            auto_delete=True,
+        )
+        assert verification_queue.name
+        await verification_channel.close()
+        await connection.close()
+
+    async def test_channel_failure_closes_all_channels_once(
+        self,
+        connection: aio_pika.Connection,
+    ):
+        connection_close_count = 0
+        connection_closed = asyncio.Event()
+        sibling_reopened = asyncio.Event()
+        channel_closed = [asyncio.Event(), asyncio.Event()]
+
+        def on_connection_close(*args):
+            nonlocal connection_close_count
+            connection_close_count += 1
+            connection_closed.set()
+
+        connection.close_callbacks.add(on_connection_close)
+        first = await self.create_channel(connection)
+        second = await self.create_channel(connection)
+        first.close_callbacks.add(lambda *_: channel_closed[0].set())
+        second.close_callbacks.add(lambda *_: channel_closed[1].set())
+        if isinstance(connection, aio_pika.RobustConnection):
+            second.reopen_callbacks.add(lambda *_: sibling_reopened.set())
+        sibling_queue = await second.declare_queue(auto_delete=True)
+
+        with pytest.raises(aio_pika.exceptions.ChannelClosed):
+            await first.declare_queue(
+                "amq.restricted_queue_name",
+                auto_delete=True,
+            )
+
+        await asyncio.wait_for(channel_closed[0].wait(), timeout=5)
+        await asyncio.wait_for(channel_closed[1].wait(), timeout=5)
+        await asyncio.wait_for(connection_closed.wait(), timeout=5)
+        assert connection_close_count == 1
+        if isinstance(connection, aio_pika.RobustConnection):
+            assert not connection.close_called
+            await asyncio.wait_for(connection.ready(), timeout=15)
+            await asyncio.wait_for(second.ready(), timeout=15)
+            await asyncio.wait_for(sibling_reopened.wait(), timeout=15)
+            recovered_queue = await second.declare_queue(
+                sibling_queue.name,
+                passive=True,
+            )
+            assert recovered_queue.name == sibling_queue.name
+        else:
+            await asyncio.wait_for(connection.closed(), timeout=5)
+            assert connection.is_closed
+
     async def test_declaration_result(
         self,
         channel: aio_pika.Channel,
