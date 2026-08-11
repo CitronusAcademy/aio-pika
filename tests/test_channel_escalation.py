@@ -1,5 +1,5 @@
 import asyncio
-from typing import Awaitable, List, Literal, Optional, cast
+from typing import Any, Awaitable, List, Literal, Optional, cast
 from unittest import mock
 
 import pytest
@@ -7,6 +7,7 @@ from yarl import URL
 
 from aio_pika import Channel, Connection
 from aio_pika.robust_channel import RobustChannel
+from aio_pika.robust_connection import RobustConnection
 from aio_pika.abc import AbstractChannel, AbstractConnection
 
 
@@ -45,9 +46,17 @@ async def _drain_loop(loop: asyncio.AbstractEventLoop) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _active_connection(**kwargs: object) -> Connection:
-    connection = Connection(URL("amqp://guest:guest@localhost/"), **kwargs)
-    connection.transport = object()
+def _active_connection(
+    *,
+    channel_escalation: bool = True,
+    channel_escalation_timeout: float = 5.0,
+) -> Connection:
+    connection = Connection(
+        URL("amqp://guest:guest@localhost/"),
+        channel_escalation=channel_escalation,
+        channel_escalation_timeout=channel_escalation_timeout,
+    )
+    connection.transport = cast(Any, object())
     return connection
 
 
@@ -57,7 +66,7 @@ async def test_connection_channel_escalation_is_enabled_by_default() -> None:
 
     channel = connection.channel()
 
-    assert channel._escalation_timeout == 5.0
+    assert cast(Any, channel)._escalation_timeout == 5.0
     assert len(channel.close_callbacks) == channel_callbacks_before + 1
 
 
@@ -67,7 +76,7 @@ async def test_connection_channel_escalation_can_opt_out() -> None:
 
     channel = connection.channel(channel_escalation=False)
 
-    assert channel._escalation_timeout is None
+    assert cast(Any, channel)._escalation_timeout is None
     assert len(channel.close_callbacks) == channel_callbacks_before
 
 
@@ -76,7 +85,7 @@ async def test_connection_channel_escalation_accepts_custom_timeout() -> None:
 
     channel = connection.channel(channel_escalation_timeout=1.25)
 
-    assert channel._escalation_timeout == 1.25
+    assert cast(Any, channel)._escalation_timeout == 1.25
 
 
 async def test_connection_channel_escalation_can_opt_back_in() -> None:
@@ -85,7 +94,7 @@ async def test_connection_channel_escalation_can_opt_back_in() -> None:
 
     channel = connection.channel(channel_escalation=True)
 
-    assert channel._escalation_timeout == 5.0
+    assert cast(Any, channel)._escalation_timeout == 5.0
     assert len(channel.close_callbacks) == channel_callbacks_before + 1
 
 
@@ -120,6 +129,26 @@ async def test_channel_failure_close_preserves_connection_reconnect_state() -> (
     assert connection.close_called is False
 
 
+async def test_robust_channel_failure_close_signals_reconnect_after_error() -> (
+    None
+):
+    connection = RobustConnection(URL("amqp://guest:guest@localhost/"))
+    transport = mock.AsyncMock()
+    transport.close.side_effect = OSError("underlay close failed")
+    connection.transport = transport
+    channel = connection.channel()
+
+    await channel.close_callbacks(RuntimeError("channel failed"))
+    await _drain_loop(asyncio.get_running_loop())
+
+    assert connection.connected.is_set() is False
+    assert connection.close_called is False
+    assert cast(
+        Any,
+        connection,
+    )._RobustConnection__connection_close_event.is_set()
+
+
 async def test_robust_channel_accepts_escalation_policy() -> None:
     connection = FakeConnection()
 
@@ -129,7 +158,7 @@ async def test_robust_channel_accepts_escalation_policy() -> None:
         channel_escalation_timeout=1.25,
     )
 
-    assert channel._escalation_timeout == 1.25
+    assert cast(Any, channel)._escalation_timeout == 1.25
     assert len(channel.close_callbacks) == 1
 
 
@@ -141,19 +170,50 @@ async def test_robust_channel_can_disable_escalation() -> None:
         channel_escalation=False,
     )
 
-    assert channel._escalation_timeout is None
+    assert cast(Any, channel)._escalation_timeout is None
     assert len(channel.close_callbacks) == 0
 
 
-async def test_robust_opt_out_does_not_mark_channel_fatal() -> None:
+async def test_robust_opt_out_restores_after_unexpected_close() -> None:
     connection = FakeConnection()
     channel = RobustChannel(
         connection=cast(AbstractConnection, connection),
         channel_escalation=False,
     )
+    channel._closed = asyncio.get_running_loop().create_future()
+    channel._channel = mock.Mock()
+    channel._channel.channel = mock.Mock(is_closed=False)
+    cast(Any, channel)._RobustChannel__restored.set()
+    restore = mock.AsyncMock()
+    cast(Any, channel).restore = restore
 
-    assert channel._escalation_scheduled is False
-    assert channel._escalation_timeout is None
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_result(RuntimeError("channel failed"))
+    await channel._on_close(closing)
+
+    restore.assert_awaited_once()
+
+
+async def test_robust_enabled_channel_does_not_restore_after_close() -> None:
+    connection = FakeConnection()
+    channel = RobustChannel(
+        connection=cast(AbstractConnection, connection),
+        channel_escalation=True,
+        channel_escalation_timeout=1.25,
+    )
+    channel._closed = asyncio.get_running_loop().create_future()
+    channel._channel = mock.Mock()
+    channel._channel.channel = mock.Mock(is_closed=False)
+    cast(Any, channel)._RobustChannel__restored.set()
+    restore = mock.AsyncMock()
+    cast(Any, channel).restore = restore
+    channel._escalation_scheduled = True
+
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_result(RuntimeError("channel failed"))
+    await channel._on_close(closing)
+
+    restore.assert_not_awaited()
 
 
 async def test_robust_enabled_channel_marks_fatal_escalation() -> None:
@@ -168,8 +228,10 @@ async def test_robust_enabled_channel_marks_fatal_escalation() -> None:
 
     assert channel._escalation_scheduled is True
     assert connection.close.await_count == 0
-    channel._escalation_task.cancel()
-    await asyncio.gather(channel._escalation_task, return_exceptions=True)
+    escalation_task = channel._escalation_task
+    assert escalation_task is not None
+    escalation_task.cancel()
+    await asyncio.gather(escalation_task, return_exceptions=True)
 
 
 async def test_escalate_on_close_registers_one_callback() -> None:

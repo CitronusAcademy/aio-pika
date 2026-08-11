@@ -133,13 +133,13 @@ class TestCaseNoRobust(TestCaseAmqp):  # type: ignore
         assert channel.is_closed
 
     async def test_get_exchange(self, connection, declare_exchange):
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         name = get_random_name("passive", "exchange")
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await channel.get_exchange(name)
 
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         exchange = await declare_exchange(
             name,
             auto_delete=True,
@@ -217,7 +217,9 @@ class TestCaseAmqpWithConfirmsRobust(TestCaseAmqpWithConfirms):
 
 
 async def test_robust_channel_recovers_without_escalation(connection):
-    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel: RobustChannel = await connection.channel(
+        channel_escalation=False,
+    )  # type: ignore
     reopened = asyncio.Event()
     channel.reopen_callbacks.add(lambda *_: reopened.set())
     underlay = await channel.get_underlay_channel()
@@ -252,14 +254,15 @@ async def test_escalated_robust_channel_closes_connection_without_restore(
     closing.set_exception(original)
     restore = AsyncMock()
     connection_closed = asyncio.Event()
-    connection.close = AsyncMock()  # type: ignore
-    connection.close.side_effect = (  # type: ignore
-        lambda exc=None: connection_closed.set()
+    connection._close_from_channel_failure = AsyncMock(  # type: ignore
+        side_effect=lambda exc=None: connection_closed.set()
     )
     channel.restore = restore  # type: ignore
     await channel._on_close(closing)
     await asyncio.wait_for(connection_closed.wait(), timeout=1)
-    connection.close.assert_awaited_once_with(original)  # type: ignore
+    connection._close_from_channel_failure.assert_awaited_once_with(  # type: ignore
+        original
+    )
     restore.assert_not_awaited()
 
 
@@ -269,7 +272,7 @@ async def test_escalated_robust_channel_ready_waiter_terminates(connection):
     original = RuntimeError("fatal ready close")
     closing = asyncio.get_running_loop().create_future()
     closing.set_exception(original)
-    connection.close = AsyncMock()  # type: ignore
+    connection._close_from_channel_failure = AsyncMock()  # type: ignore
     await channel._on_close(closing)
     await asyncio.wait_for(channel.closed(), timeout=1)
     with pytest.raises(asyncio.TimeoutError):
@@ -281,7 +284,7 @@ async def test_escalated_robust_channel_replacement_dies_again(connection):
     channel.escalate_on_close(timeout=1)
     close = AsyncMock()
     restore = AsyncMock()
-    connection.close = close  # type: ignore
+    connection._close_from_channel_failure = close  # type: ignore
     channel.restore = restore  # type: ignore
     first = asyncio.get_running_loop().create_future()
     first_exc = RuntimeError("first death")
@@ -294,7 +297,7 @@ async def test_escalated_robust_channel_replacement_dies_again(connection):
     second.set_exception(second_exc)
     await channel._on_close(second)
     await asyncio.sleep(0)
-    assert close.await_count == 1
+    assert close.await_count == 2
     restore.assert_not_awaited()
 
 

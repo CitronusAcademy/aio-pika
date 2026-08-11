@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Optional, List
+from typing import Callable, List, Optional, cast
 from unittest import mock
 
 import aiormq.exceptions
@@ -178,7 +178,7 @@ class TestCaseAmqp(TestCaseAmqpBase):
         declare_exchange: Callable,
     ):
         exchange_name = get_random_name()
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await declare_exchange(
@@ -188,8 +188,8 @@ class TestCaseAmqp(TestCaseAmqpBase):
                 channel=channel,
             )
 
-        channel1 = await self.create_channel(connection)
-        channel2 = await self.create_channel(connection)
+        channel1 = await connection.channel(channel_escalation=False)
+        channel2 = await connection.channel(channel_escalation=False)
 
         await declare_exchange(
             exchange_name,
@@ -213,9 +213,9 @@ class TestCaseAmqp(TestCaseAmqpBase):
         declare_queue: Callable,
     ):
         queue_name = get_random_name()
-        ch1 = await self.create_channel(connection)
-        ch2 = await self.create_channel(connection)
-        ch3 = await self.create_channel(connection)
+        ch1 = await connection.channel(channel_escalation=False)
+        ch2 = await connection.channel(channel_escalation=False)
+        ch3 = await connection.channel(channel_escalation=False)
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await declare_queue(
@@ -1196,8 +1196,11 @@ class TestCaseAmqp(TestCaseAmqpBase):
         with pytest.raises(aio_pika.exceptions.ChannelClosed):
             await declare_queue("amq.restricted_queue_name", auto_delete=True)
 
-        await asyncio.wait_for(connection.closed(), timeout=5.0)
-        assert connection.is_closed
+        if isinstance(connection, aio_pika.RobustConnection):
+            await asyncio.wait_for(connection.ready(), timeout=15)
+        else:
+            await asyncio.wait_for(connection.closed(), timeout=5.0)
+            assert connection.is_closed
 
     async def test_default_channel_escalation_closes_active_consumer(
         self,
@@ -1243,7 +1246,14 @@ class TestCaseAmqp(TestCaseAmqpBase):
         if isinstance(connection, aio_pika.RobustConnection):
             assert not connection.close_called
             await asyncio.wait_for(connection.ready(), timeout=15)
-            await asyncio.wait_for(consumer_channel.ready(), timeout=15)
+            robust_consumer_channel = cast(
+                aio_pika.RobustChannel,
+                consumer_channel,
+            )
+            await asyncio.wait_for(
+                robust_consumer_channel.ready(),
+                timeout=15,
+            )
             await consumer_channel.default_exchange.publish(
                 Message(b"consumer-recovered"),
                 routing_key=queue.name,
@@ -1318,10 +1328,13 @@ class TestCaseAmqp(TestCaseAmqpBase):
         connection.close_callbacks.add(on_connection_close)
         first = await self.create_channel(connection)
         second = await self.create_channel(connection)
+        robust_second = cast(aio_pika.RobustChannel, second)
         first.close_callbacks.add(lambda *_: channel_closed[0].set())
         second.close_callbacks.add(lambda *_: channel_closed[1].set())
         if isinstance(connection, aio_pika.RobustConnection):
-            second.reopen_callbacks.add(lambda *_: sibling_reopened.set())
+            robust_second.reopen_callbacks.add(
+                lambda *_: sibling_reopened.set(),
+            )
         sibling_queue = await second.declare_queue(auto_delete=True)
 
         with pytest.raises(aio_pika.exceptions.ChannelClosed):
@@ -1337,7 +1350,7 @@ class TestCaseAmqp(TestCaseAmqpBase):
         if isinstance(connection, aio_pika.RobustConnection):
             assert not connection.close_called
             await asyncio.wait_for(connection.ready(), timeout=15)
-            await asyncio.wait_for(second.ready(), timeout=15)
+            await asyncio.wait_for(robust_second.ready(), timeout=15)
             await asyncio.wait_for(sibling_reopened.wait(), timeout=15)
             recovered_queue = await second.declare_queue(
                 sibling_queue.name,
@@ -1735,7 +1748,7 @@ class TestCaseAmqp(TestCaseAmqpBase):
         add_cleanup: Callable,
     ):
         ch1 = await self.create_channel(connection)
-        ch2 = await self.create_channel(connection)
+        ch2 = await connection.channel(channel_escalation=False)
 
         qname = get_random_name("channel", "locked", "resource")
 
@@ -1915,9 +1928,9 @@ class TestCaseAmqp(TestCaseAmqpBase):
     ):
         name = get_random_name("passive", "exchange")
 
-        ch1 = await self.create_channel(connection)
-        ch2 = await self.create_channel(connection)
-        ch3 = await self.create_channel(connection)
+        ch1 = await connection.channel(channel_escalation=False)
+        ch2 = await connection.channel(channel_escalation=False)
+        ch3 = await connection.channel(channel_escalation=False)
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await declare_exchange(name, passive=True, channel=ch1)
@@ -1938,9 +1951,9 @@ class TestCaseAmqp(TestCaseAmqpBase):
     ):
         name = get_random_name("passive", "queue")
 
-        ch1 = await self.create_channel(connection)
-        ch2 = await self.create_channel(connection)
-        ch3 = await self.create_channel(connection)
+        ch1 = await connection.channel(channel_escalation=False)
+        ch2 = await connection.channel(channel_escalation=False)
+        ch3 = await connection.channel(channel_escalation=False)
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await declare_queue(name, passive=True, channel=ch1)
@@ -1951,13 +1964,13 @@ class TestCaseAmqp(TestCaseAmqpBase):
         assert queue.name == queue_passive.name
 
     async def test_get_exchange(self, connection, declare_exchange):
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         name = get_random_name("passive", "exchange")
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await channel.get_exchange(name)
 
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         exchange = await declare_exchange(
             name,
             auto_delete=True,
@@ -1968,13 +1981,13 @@ class TestCaseAmqp(TestCaseAmqpBase):
         assert exchange.name == exchange_passive.name
 
     async def test_get_queue(self, connection, declare_queue):
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         name = get_random_name("passive", "queue")
 
         with pytest.raises(aio_pika.exceptions.ChannelNotFoundEntity):
             await channel.get_queue(name)
 
-        channel = await self.create_channel(connection)
+        channel = await connection.channel(channel_escalation=False)
         queue = await declare_queue(name, auto_delete=True, channel=channel)
         queue_passive = await channel.get_queue(name)
 

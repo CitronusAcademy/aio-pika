@@ -227,10 +227,10 @@ class Channel(ChannelContext):
         finally:
             if close_task is not None and close_task.done():
                 self._clear_connection_close_task(close_task)
+                self._escalation_scheduled = False
             current_task = asyncio.current_task()
             if self._escalation_task is current_task:
                 self._escalation_task = None
-                self._escalation_scheduled = False
 
     def _clear_connection_close_task(
         self,
@@ -279,6 +279,7 @@ class Channel(ChannelContext):
             self._escalation_scheduled = False
 
         await self._wait_for_connection_close()
+        self._escalation_scheduled = False
 
         if not self.is_initialized:
             log.warning("Channel not opened")

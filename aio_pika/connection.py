@@ -71,6 +71,7 @@ class Connection(AbstractConnection):
 
     _closed: asyncio.Future
     _channel_failure_close_task: Optional[asyncio.Task[None]]
+    _channel_failure_close_generation: int
 
     @property
     def is_closed(self) -> bool:
@@ -122,17 +123,43 @@ class Connection(AbstractConnection):
         exc: Optional[BaseException],
     ) -> None:
         task = self._channel_failure_close_task
+        generation = self._channel_failure_close_generation
         if task is None:
             transport, self.transport = self.transport, None
+            self._channel_failure_close_generation += 1
+            generation = self._channel_failure_close_generation
             task = asyncio.create_task(
                 self._close_transport_for_channel_failure(transport, exc),
             )
             self._channel_failure_close_task = task
+            task.add_done_callback(
+                lambda completed: self._clear_channel_failure_close_task(
+                    completed,
+                    generation,
+                ),
+            )
         try:
-            await task
+            await asyncio.shield(task)
         finally:
-            if task.done() and self._channel_failure_close_task is task:
+            if (
+                task.done()
+                and self._channel_failure_close_task is task
+                and self._channel_failure_close_generation == generation
+            ):
                 self._channel_failure_close_task = None
+
+    def _clear_channel_failure_close_task(
+        self,
+        task: asyncio.Task[None],
+        generation: int,
+    ) -> None:
+        if not task.cancelled():
+            task.exception()
+        if (
+            self._channel_failure_close_task is task
+            and self._channel_failure_close_generation == generation
+        ):
+            self._channel_failure_close_task = None
 
     def closed(self) -> Awaitable[Literal[True]]:
         return self._closed
@@ -162,6 +189,7 @@ class Connection(AbstractConnection):
         self._closed = self.loop.create_future()
         self._close_called = False
         self._channel_failure_close_task = None
+        self._channel_failure_close_generation = 0
 
         self.url = URL(url)
 

@@ -14,6 +14,7 @@ from .abc import (
     ConnectionParameter,
     SSLOptions,
     TimeoutType,
+    UnderlayConnection,
 )
 from .connection import Connection, make_url
 from .exceptions import CONNECTION_EXCEPTIONS
@@ -86,18 +87,16 @@ class RobustConnection(Connection, AbstractRobustConnection):
 
     async def _close_transport_for_channel_failure(
         self,
-        transport: Optional[Any],
+        transport: Optional[UnderlayConnection],
         exc: Optional[BaseException],
     ) -> None:
-        if transport is not None:
-            await transport.close(exc)
-
-        self.connected.clear()
-
-        if self._close_called or self.is_closed:
-            return
-
-        self.__connection_close_event.set()
+        try:
+            if transport is not None:
+                await transport.close(exc)
+        finally:
+            self.connected.clear()
+            if not self._close_called and not self.is_closed:
+                self.__connection_close_event.set()
 
     async def _on_connection_close(self, closing: asyncio.Future) -> None:
         try:
