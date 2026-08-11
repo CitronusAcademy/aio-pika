@@ -52,6 +52,21 @@ aio-pika = { index = "aio-pika" }
 ```
 
 
+## Releasing (this fork)
+
+1. Bump the version in `pyproject.toml`:
+
+   ```shell
+   uv version --bump patch   # or minor / major
+   ```
+
+2. Add an entry to `CHANGELOG.md` describing the release.
+3. Commit and push both changes.
+4. Run the **Publish to Citronus PyPI** workflow manually from the Actions tab
+   (`workflow_dispatch`) to build and publish the current version to
+   `pypi.citronus.pro`.
+
+
 ## Usage example
 
 Simple consumer:

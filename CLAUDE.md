@@ -23,6 +23,7 @@ uv run ruff format --check       # formatting gate used by CI
 uv run mypy                      # files list is pinned in pyproject.toml
 uv run make -C docs html         # sphinx docs -> docs/build/html
 uv run nox -s docs -- serve      # live-reloading docs
+uv run cz bump --increment patch|minor|major  # bump version + tag (manual, no changelog)
 ```
 
 CI additionally passes `--doctest-modules --aiomisc-test-timeout=120`, so
