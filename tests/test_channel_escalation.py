@@ -333,6 +333,30 @@ async def test_channel_close_does_not_hang_after_escalation_timeout() -> None:
         loop.set_exception_handler(old_handler)
 
 
+async def test_explicit_close_does_not_wait_for_escalation_timeout() -> None:
+    """Explicit cleanup uses its own bound, not the escalation deadline."""
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=30.0)
+
+    close_started = asyncio.Event()
+    hanging = asyncio.Event()
+
+    async def hanging_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await hanging.wait()
+
+    connection.close = mock.AsyncMock(side_effect=hanging_close)
+
+    await channel.close_callbacks(RuntimeError("boom"))
+    await asyncio.wait_for(close_started.wait(), timeout=3.0)
+
+    await asyncio.wait_for(channel.close(), timeout=1.0)
+
+    assert connection.close.await_count == 1
+    assert channel._connection_close_task is None
+
+
 async def test_late_connection_close_exception_is_consumed() -> None:
     """A late exception raised by the child connection.close() task after
     the escalation timeout must be consumed (not leaked to the event loop
