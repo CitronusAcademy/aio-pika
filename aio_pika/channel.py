@@ -157,9 +157,13 @@ class Channel(ChannelContext):
             or self._escalation_scheduled
         ):
             return
+        if connection.transport is None:
+            return
 
         self._escalation_scheduled = True
-        connection._mark_close_called()
+        mark_close_called = getattr(connection, '_mark_close_called', None)
+        if mark_close_called is not None:
+            mark_close_called()
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
