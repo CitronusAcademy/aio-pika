@@ -91,6 +91,9 @@ class Channel(ChannelContext):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: bool = False,
+        channel_escalation_timeout: float = 5.0,
     ):
         """
 
@@ -129,6 +132,8 @@ class Channel(ChannelContext):
         self.on_return_raises = on_return_raises
 
         self.close_callbacks.add(self._set_closed_callback)
+        if channel_escalation:
+            self.escalate_on_close(channel_escalation_timeout)
 
     @property
     def is_initialized(self) -> bool:

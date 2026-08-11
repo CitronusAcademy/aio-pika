@@ -44,6 +44,9 @@ class RobustChannel(Channel, AbstractRobustChannel):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: bool = False,
+        channel_escalation_timeout: float = 5.0,
     ):
         """
 
@@ -61,6 +64,8 @@ class RobustChannel(Channel, AbstractRobustChannel):
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
+            channel_escalation=channel_escalation,
+            channel_escalation_timeout=channel_escalation_timeout,
         )
 
         self._exchanges = defaultdict()

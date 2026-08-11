@@ -6,6 +6,7 @@ import pytest
 from yarl import URL
 
 from aio_pika import Channel, Connection
+from aio_pika.robust_channel import RobustChannel
 from aio_pika.abc import AbstractChannel, AbstractConnection
 
 
@@ -42,6 +43,75 @@ async def _drain_loop(loop: asyncio.AbstractEventLoop) -> None:
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+def _active_connection(**kwargs: object) -> Connection:
+    connection = Connection(URL("amqp://guest:guest@localhost/"), **kwargs)
+    connection.transport = object()
+    return connection
+
+
+async def test_connection_channel_escalation_is_enabled_by_default() -> None:
+    connection = _active_connection()
+    channel_callbacks_before = 1
+
+    channel = connection.channel()
+
+    assert channel._escalation_timeout == 5.0
+    assert len(channel.close_callbacks) == channel_callbacks_before + 1
+
+
+async def test_connection_channel_escalation_can_opt_out() -> None:
+    connection = _active_connection()
+    channel_callbacks_before = 1
+
+    channel = connection.channel(channel_escalation=False)
+
+    assert channel._escalation_timeout is None
+    assert len(channel.close_callbacks) == channel_callbacks_before
+
+
+async def test_connection_channel_escalation_accepts_custom_timeout() -> None:
+    connection = _active_connection()
+
+    channel = connection.channel(channel_escalation_timeout=1.25)
+
+    assert channel._escalation_timeout == 1.25
+
+
+async def test_connection_channel_escalation_can_opt_back_in() -> None:
+    connection = _active_connection(channel_escalation=False)
+    channel_callbacks_before = 1
+
+    channel = connection.channel(channel_escalation=True)
+
+    assert channel._escalation_timeout == 5.0
+    assert len(channel.close_callbacks) == channel_callbacks_before + 1
+
+
+async def test_robust_channel_accepts_escalation_policy() -> None:
+    connection = FakeConnection()
+
+    channel = RobustChannel(
+        connection=cast(AbstractConnection, connection),
+        channel_escalation=True,
+        channel_escalation_timeout=1.25,
+    )
+
+    assert channel._escalation_timeout == 1.25
+    assert len(channel.close_callbacks) == 1
+
+
+async def test_robust_channel_can_disable_escalation() -> None:
+    connection = FakeConnection()
+
+    channel = RobustChannel(
+        connection=cast(AbstractConnection, connection),
+        channel_escalation=False,
+    )
+
+    assert channel._escalation_timeout is None
+    assert len(channel.close_callbacks) == 0
 
 
 async def test_escalate_on_close_registers_one_callback() -> None:

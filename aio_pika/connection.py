@@ -253,6 +253,21 @@ class Connection(AbstractConnection):
         if not self.transport:
             raise RuntimeError("Connection was not opened")
 
+        escalation_enabled = (
+            self.channel_escalation
+            if channel_escalation is None
+            else channel_escalation
+        )
+        escalation_timeout = (
+            self.channel_escalation_timeout
+            if channel_escalation_timeout is None
+            else channel_escalation_timeout
+        )
+        if not math.isfinite(escalation_timeout) or escalation_timeout <= 0:
+            raise ValueError(
+                "channel_escalation_timeout must be a positive finite number",
+            )
+
         log.debug("Creating AMQP channel for connection: %r", self)
 
         channel = self.CHANNEL_CLASS(
@@ -260,6 +275,8 @@ class Connection(AbstractConnection):
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
+            channel_escalation=escalation_enabled,
+            channel_escalation_timeout=escalation_timeout,
         )
 
         log.debug("Channel created: %r", channel)
