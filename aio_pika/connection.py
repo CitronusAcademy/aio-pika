@@ -70,6 +70,7 @@ class Connection(AbstractConnection):
     )
 
     _closed: asyncio.Future
+    _channel_failure_close_task: Optional[asyncio.Task[None]]
 
     @property
     def is_closed(self) -> bool:
@@ -91,6 +92,13 @@ class Connection(AbstractConnection):
     ) -> None:
         transport, self.transport = self.transport, None
         self._close_called = True
+        await self._close_transport(transport, exc)
+
+    async def _close_transport(
+        self,
+        transport: Optional[UnderlayConnection],
+        exc: Optional[aiormq.abc.ExceptionType],
+    ) -> None:
         if transport:
             try:
                 await transport.close(exc)
@@ -99,6 +107,32 @@ class Connection(AbstractConnection):
                     self._closed.set_result(True)
         elif not self._closed.done():
             self._closed.set_result(True)
+
+    async def _close_transport_for_channel_failure(
+        self,
+        transport: Optional[UnderlayConnection],
+        exc: Optional[BaseException],
+    ) -> None:
+        await self._close_transport(transport, exc)
+        if not self._closed.done():
+            self._closed.set_result(True)
+
+    async def _close_from_channel_failure(
+        self,
+        exc: Optional[BaseException],
+    ) -> None:
+        task = self._channel_failure_close_task
+        if task is None:
+            transport, self.transport = self.transport, None
+            task = asyncio.create_task(
+                self._close_transport_for_channel_failure(transport, exc),
+            )
+            self._channel_failure_close_task = task
+        try:
+            await task
+        finally:
+            if task.done() and self._channel_failure_close_task is task:
+                self._channel_failure_close_task = None
 
     def closed(self) -> Awaitable[Literal[True]]:
         return self._closed
@@ -127,6 +161,7 @@ class Connection(AbstractConnection):
         self.transport = None
         self._closed = self.loop.create_future()
         self._close_called = False
+        self._channel_failure_close_task = None
 
         self.url = URL(url)
 

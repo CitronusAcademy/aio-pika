@@ -180,9 +180,6 @@ class Channel(ChannelContext):
             return
 
         self._escalation_scheduled = True
-        mark_close_called = getattr(connection, "_mark_close_called", None)
-        if mark_close_called is not None:
-            mark_close_called()
         self._escalation_task = asyncio.create_task(
             self._run_escalation(connection, exc),
         )
@@ -196,9 +193,19 @@ class Channel(ChannelContext):
         try:
             if self._explicit_close:
                 return
-            close = (
-                connection.close(exc) if exc is not None else connection.close()
+            close_from_failure = getattr(
+                connection,
+                "_close_from_channel_failure",
+                None,
             )
+            if close_from_failure is not None:
+                close = close_from_failure(exc)
+            else:
+                close = (
+                    connection.close(exc)
+                    if exc is not None
+                    else connection.close()
+                )
             close_task = asyncio.create_task(close)
             self._connection_close_task = close_task
             close_task.add_done_callback(self._clear_connection_close_task)

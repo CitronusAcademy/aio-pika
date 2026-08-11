@@ -84,6 +84,21 @@ class RobustConnection(Connection, AbstractRobustConnection):
             f"{len(self.__channels)} channels>"
         )
 
+    async def _close_transport_for_channel_failure(
+        self,
+        transport: Optional[Any],
+        exc: Optional[BaseException],
+    ) -> None:
+        if transport is not None:
+            await transport.close(exc)
+
+        self.connected.clear()
+
+        if self._close_called or self.is_closed:
+            return
+
+        self.__connection_close_event.set()
+
     async def _on_connection_close(self, closing: asyncio.Future) -> None:
         try:
             await super()._on_connection_close(closing)
