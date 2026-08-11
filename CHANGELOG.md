@@ -4,6 +4,9 @@ Unreleased
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`
+* Fork: added `commitizen` as a dev dependency for manual version bumps
+  (`uv run cz bump --increment patch|minor|major`); no commit-message
+  enforcement and no changelog auto-generation
 
 9.6.0
 -----

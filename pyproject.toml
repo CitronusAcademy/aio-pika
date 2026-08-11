@@ -68,6 +68,7 @@ dev = [
     "sphinxcontrib-googleanalytics",
     "myst-parser",
     "sphinx-design",
+    "commitizen>=4.17.0",
 ]
 uvloop = ["uvloop>=0.21,<0.22"]
 
@@ -132,6 +133,10 @@ exclude_lines = [
     "pragma: no cover",
     "raise NotImplementedError",
 ]
+
+[tool.commitizen]
+version_provider = "pep621"
+tag_format = "$version"
 
 [tool.ruff]
 line-length = 80
