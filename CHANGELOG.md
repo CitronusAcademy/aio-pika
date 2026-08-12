@@ -8,6 +8,9 @@ Unreleased
   compatibility method `Channel.escalate_on_close()` remains available as a
   secondary compatibility interface. This is an intentional Citronus fork
   policy and diverges from upstream aio-pika.
+* Escalation timeout no longer latches the channel: a timed-out connection
+  close keeps running, its late failure is logged, and a later channel
+  failure escalates again.
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`

@@ -215,13 +215,16 @@ class Channel(ChannelContext):
             )
             if done:
                 await close_task
+            else:
+                log.warning(
+                    "Connection close after channel failure timed out",
+                )
+                self._escalation_scheduled = False
         except asyncio.CancelledError:
             if close_task is not None:
                 await self._wait_for_connection_close()
             else:
                 log.debug("Channel close escalation cancelled", exc_info=True)
-        except asyncio.TimeoutError:
-            log.warning("Channel close escalation timed out", exc_info=True)
         except Exception:
             log.warning("Channel close escalation failed", exc_info=True)
         finally:
@@ -237,7 +240,10 @@ class Channel(ChannelContext):
         task: asyncio.Task[None],
     ) -> None:
         if not task.cancelled():
-            task.exception()
+            _log_gather_exception(
+                task.exception(),
+                "Connection close after channel failure",
+            )
         if self._connection_close_task is task:
             self._connection_close_task = None
 

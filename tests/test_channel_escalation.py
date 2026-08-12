@@ -9,6 +9,7 @@ from aio_pika import Channel, Connection
 from aio_pika.robust_channel import RobustChannel
 from aio_pika.robust_connection import RobustConnection
 from aio_pika.abc import AbstractChannel, AbstractConnection
+from aio_pika.channel import log as channel_log
 
 
 class FakeConnection:
@@ -815,6 +816,75 @@ async def test_escalation_timeout_late_exception_is_consumed() -> None:
         release_close.set()
         await _drain_loop(loop)
         assert channel._connection_close_task is None
+        assert captured == []
+    finally:
+        loop.set_exception_handler(old_handler)
+
+
+async def test_escalation_timeout_resets_scheduled_state() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    hang = asyncio.Event()
+    close_started = asyncio.Event()
+
+    async def hanging_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await hang.wait()
+
+    connection.close = mock.AsyncMock(side_effect=hanging_close)
+
+    await channel.close_callbacks(RuntimeError("boom"))
+    await asyncio.wait_for(close_started.wait(), timeout=3.0)
+    task = channel._escalation_task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert channel._escalation_scheduled is False
+    assert connection.close.await_count == 1
+
+    await channel.close_callbacks(RuntimeError("boom again"))
+    await _drain_loop(asyncio.get_running_loop())
+    assert connection.close.await_count == 2
+
+    hang.set()
+    await channel.close()
+    assert channel._connection_close_task is None
+
+
+async def test_escalation_timeout_lingering_close_exception_is_logged() -> None:
+    connection = FakeConnection()
+    channel = Channel(connection=cast(AbstractConnection, connection))
+    channel.escalate_on_close(timeout=0.05)
+
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def failing_close(*args: object, **kwargs: object) -> None:
+        close_started.set()
+        await release_close.wait()
+        raise OSError("late connection failure")
+
+    connection.close = mock.AsyncMock(side_effect=failing_close)
+    loop = asyncio.get_running_loop()
+    old_handler = loop.get_exception_handler()
+    captured: List[dict] = []
+    loop.set_exception_handler(lambda _, context: captured.append(context))
+    try:
+        await channel.close_callbacks(RuntimeError("boom"))
+        await asyncio.wait_for(close_started.wait(), timeout=3.0)
+        task = channel._escalation_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=3.0)
+        assert channel._escalation_scheduled is False
+
+        with mock.patch.object(channel_log, "warning") as warning:
+            release_close.set()
+            await _drain_loop(loop)
+            await _drain_loop(loop)
+            assert warning.called
+
         assert captured == []
     finally:
         loop.set_exception_handler(old_handler)
