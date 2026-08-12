@@ -369,10 +369,57 @@ async def test_context_process_abrupt_channel_close(
     underlay_channel = await channel.get_underlay_channel()
     await underlay_channel.close()
 
-    with pytest.raises(aiormq.exceptions.ChannelInvalidStateError):
+    # ack on a closed channel must not blow up message processing;
+    # it's logged and skipped instead (see #302 and its 2023 regression)
+    async with incoming_message.process():
+        # emulate some activity on closed channel
+        await channel.get_underlay_channel()
+
+    # emulate connection/channel restoration of connect_robust
+    await channel.reopen()
+
+    # cleanup queue
+    incoming_message = await queue.get(timeout=5)
+    async with incoming_message.process():
+        pass
+    await queue.unbind(exchange, routing_key)
+
+
+async def test_context_process_does_not_mask_original_exception(
+    connection: aio_pika.RobustConnection,
+    declare_exchange: Callable,
+    declare_queue: Callable,
+):
+    # message.process()'s ack/reject on an already-closed channel must not
+    # replace the exception raised by the caller's own processing code with
+    # ChannelInvalidStateError.
+    queue_name = get_random_name("test_connection")
+    routing_key = get_random_name("rounting_key")
+
+    channel = await connection.channel()
+    exchange = await declare_exchange(
+        "direct",
+        auto_delete=True,
+        channel=channel,
+    )
+    queue = await declare_queue(queue_name, auto_delete=True, channel=channel)
+
+    await queue.bind(exchange, routing_key)
+    body = bytes(shortuuid.uuid(), "utf-8")
+
+    await exchange.publish(
+        Message(body, content_type="text/plain"),
+        routing_key,
+    )
+
+    incoming_message = await queue.get(timeout=5)
+    # close aiormq channel to emulate abrupt connection/channel close
+    underlay_channel = await channel.get_underlay_channel()
+    await underlay_channel.close()
+
+    with pytest.raises(ValueError, match="boom"):
         async with incoming_message.process():
-            # emulate some activity on closed channel
-            await channel.get_underlay_channel()
+            raise ValueError("boom")
 
     # emulate connection/channel restoration of connect_robust
     await channel.reopen()
@@ -496,6 +543,65 @@ async def test_channel_restore(
             await on_reopen.wait()
             await channel.set_qos(0)
             await channel.set_qos(1)
+
+
+@aiomisc.timeout(10)
+async def test_channel_restore_retries_after_timeout(
+    channel: aio_pika.RobustChannel,
+):
+    # A stuck reopen() (e.g. broker not responding to a redeclare RPC after
+    # a network blip) must not wedge restore() forever: it should time out
+    # and retry instead.
+    channel.RESTORE_TIMEOUT = 0.2
+    channel.RESTORE_RETRY_DELAY = 0
+
+    attempts = 0
+    real_reopen = channel.reopen
+
+    async def flaky_reopen() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            await asyncio.Event().wait()  # never resolves on its own
+        await real_reopen()
+
+    channel.reopen = flaky_reopen  # type: ignore[method-assign]
+    restored: asyncio.Event = channel._RobustChannel__restored  # type: ignore[attr-defined]
+    restored.clear()  # pretend restore is needed
+
+    await asyncio.wait_for(channel.restore(), timeout=5)
+
+    assert attempts == 3
+    assert restored.is_set()
+
+
+@aiomisc.timeout(10)
+async def test_channel_restore_gives_up_after_max_attempts(
+    channel: aio_pika.RobustChannel,
+):
+    # A channel stuck on every single attempt must eventually give up
+    # (raise) instead of retrying forever and blocking every other
+    # channel's restore() on the same connection.
+    channel.RESTORE_TIMEOUT = 0.1
+    channel.RESTORE_RETRY_DELAY = 0
+    channel.RESTORE_RETRY_ATTEMPTS = 2
+
+    attempts = 0
+
+    async def stuck_reopen() -> None:
+        nonlocal attempts
+        attempts += 1
+        await asyncio.Event().wait()  # never resolves
+
+    channel.reopen = stuck_reopen  # type: ignore[method-assign]
+    restored: asyncio.Event = channel._RobustChannel__restored  # type: ignore[attr-defined]
+    restored.clear()  # pretend restore is needed
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.restore(), timeout=5)
+
+    assert attempts == 2
+    assert not restored.is_set()
 
 
 @aiomisc.timeout(20)

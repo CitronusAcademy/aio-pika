@@ -45,10 +45,21 @@ def iscoroutinepartial(fn: Callable[..., Any]) -> bool:
 def _task_done(future: asyncio.Future) -> None:
     try:
         exc = future.exception()
-        if exc is not None:
-            raise exc
     except asyncio.CancelledError:
-        pass
+        return
+
+    if exc is not None:
+        log.error(
+            "Task %r failed: %s: %s",
+            future,
+            type(exc).__name__,
+            exc,
+        )
+        log.debug(
+            "Full traceback for task %r error",
+            future,
+            exc_info=exc,
+        )
 
 
 def create_task(
