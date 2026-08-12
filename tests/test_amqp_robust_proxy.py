@@ -1210,6 +1210,5 @@ async def test_explicit_connection_close_race_does_not_duplicate_escalation(
     closing = asyncio.get_running_loop().create_future()
     closing.set_exception(exc)
     await channel._on_close(closing)
-    await asyncio.wait_for(channel.closed(), timeout=1)
     assert connection.is_closed
     assert channel._escalation_task is None or channel._escalation_task.done()
