@@ -11,6 +11,10 @@ Unreleased
 * Escalation timeout no longer latches the channel: a timed-out connection
   close keeps running, its late failure is logged, and a later channel
   failure escalates again.
+* Custom `CHANNEL_CLASS` implementations with the pre-escalation `__init__`
+  signature keep working: escalation kwargs are passed only when the class
+  accepts them, and a warning is logged when automatic escalation cannot be
+  applied.
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`

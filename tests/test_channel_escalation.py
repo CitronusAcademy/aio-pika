@@ -920,6 +920,34 @@ async def test_completed_escalation_can_run_again() -> None:
     assert connection.close.await_count == 2
 
 
+async def test_legacy_channel_class_without_escalation_kwargs_works() -> None:
+    class LegacyChannel(Channel):
+        def __init__(
+            self,
+            connection: AbstractConnection,
+            channel_number: Optional[int] = None,
+            publisher_confirms: bool = True,
+            on_return_raises: bool = False,
+        ) -> None:
+            super().__init__(
+                connection=connection,
+                channel_number=channel_number,
+                publisher_confirms=publisher_confirms,
+                on_return_raises=on_return_raises,
+            )
+
+    class LegacyConnection(Connection):
+        CHANNEL_CLASS = LegacyChannel
+
+    connection = LegacyConnection(URL("amqp://guest:guest@localhost/"))
+    connection.transport = cast(Any, object())
+
+    channel = connection.channel()
+
+    assert isinstance(channel, LegacyChannel)
+    assert cast(Any, channel)._escalation_timeout is None
+
+
 # ---------------------------------------------------------------------------
 # Exception consumption
 # ---------------------------------------------------------------------------

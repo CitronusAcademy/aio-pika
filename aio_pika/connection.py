@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
+import inspect
 import math
+from functools import lru_cache
 from ssl import SSLContext
 from types import TracebackType
 from typing import (
@@ -39,6 +41,21 @@ from .tools import CallbackCollection
 log = get_logger(__name__)
 T = TypeVar("T")
 ConnectionType = TypeVar("ConnectionType", bound=AbstractConnection)
+
+
+@lru_cache(maxsize=None)
+def _channel_class_supports_escalation(channel_class: type) -> bool:
+    try:
+        signature = inspect.signature(channel_class.__init__)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return True
+    return "channel_escalation" in parameters
 
 
 class Connection(AbstractConnection):
@@ -333,13 +350,25 @@ class Connection(AbstractConnection):
 
         log.debug("Creating AMQP channel for connection: %r", self)
 
+        channel_kwargs: Dict[str, Any] = {}
+        if _channel_class_supports_escalation(self.CHANNEL_CLASS):
+            channel_kwargs.update(
+                channel_escalation=escalation_enabled,
+                channel_escalation_timeout=escalation_timeout,
+            )
+        elif escalation_enabled:
+            log.warning(
+                "Channel class %r does not accept channel_escalation; "
+                "automatic escalation is disabled for this channel",
+                self.CHANNEL_CLASS,
+            )
+
         channel = self.CHANNEL_CLASS(
             connection=self,
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
-            channel_escalation=escalation_enabled,
-            channel_escalation_timeout=escalation_timeout,
+            **channel_kwargs,
         )
 
         log.debug("Channel created: %r", channel)
