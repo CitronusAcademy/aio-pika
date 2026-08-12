@@ -978,7 +978,11 @@ async def test_legacy_channel_class_without_escalation_kwargs_works(
 
 async def test_modern_custom_channel_class_receives_escalation_kwargs() -> None:
     class LegacyChannel(Channel):
-        def __init__(self, connection: AbstractConnection, **kwargs: Any) -> None:
+        def __init__(
+            self,
+            connection: AbstractConnection,
+            **kwargs: Any,
+        ) -> None:
             super().__init__(connection=connection, **kwargs)
 
     class ModernConnection(Connection):
