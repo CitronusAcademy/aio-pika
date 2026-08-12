@@ -10,6 +10,7 @@ from aio_pika.robust_channel import RobustChannel
 from aio_pika.robust_connection import RobustConnection
 from aio_pika.abc import AbstractChannel, AbstractConnection
 from aio_pika.channel import log as channel_log
+from aio_pika.connection import _channel_class_supports_escalation
 
 
 class FakeConnection:
@@ -920,8 +921,28 @@ async def test_completed_escalation_can_run_again() -> None:
     assert connection.close.await_count == 2
 
 
-async def test_legacy_channel_class_without_escalation_kwargs_works() -> None:
-    class LegacyChannel(Channel):
+def test_channel_class_supports_escalation_signature() -> None:
+    class ModernChannel:
+        def __init__(self, *, channel_escalation: bool = True) -> None:
+            pass
+
+    class KwargsChannel:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+    class PositionalOnlyChannel:
+        def __init__(self, channel_escalation: bool = True, /) -> None:
+            pass
+
+    assert _channel_class_supports_escalation(ModernChannel)
+    assert _channel_class_supports_escalation(KwargsChannel)
+    assert not _channel_class_supports_escalation(PositionalOnlyChannel)
+
+
+async def test_legacy_channel_class_without_escalation_kwargs_works(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TrulyLegacyChannel(Channel):
         def __init__(
             self,
             connection: AbstractConnection,
@@ -937,15 +958,31 @@ async def test_legacy_channel_class_without_escalation_kwargs_works() -> None:
             )
 
     class LegacyConnection(Connection):
-        CHANNEL_CLASS = LegacyChannel
+        CHANNEL_CLASS = TrulyLegacyChannel
 
     connection = LegacyConnection(URL("amqp://guest:guest@localhost/"))
     connection.transport = cast(Any, object())
 
-    channel = connection.channel()
+    with caplog.at_level("WARNING", logger="aio_pika.connection"):
+        channel = connection.channel()
 
-    assert isinstance(channel, LegacyChannel)
+    assert isinstance(channel, TrulyLegacyChannel)
     assert cast(Any, channel)._escalation_timeout is None
+    assert "automatic escalation is disabled" in caplog.text
+
+
+async def test_modern_custom_channel_class_receives_escalation_kwargs() -> None:
+    class LegacyChannel(Channel):
+        def __init__(self, connection: AbstractConnection, **kwargs: Any) -> None:
+            super().__init__(connection=connection, **kwargs)
+
+    class ModernConnection(Connection):
+        CHANNEL_CLASS = LegacyChannel
+
+    connection = ModernConnection(URL("amqp://guest:guest@localhost/"))
+    connection.transport = cast(Any, object())
+    channel = connection.channel()
+    assert cast(Any, channel)._escalation_timeout == 5.0
 
 
 # ---------------------------------------------------------------------------

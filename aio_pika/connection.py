@@ -55,7 +55,11 @@ def _channel_class_supports_escalation(channel_class: type) -> bool:
         for parameter in parameters.values()
     ):
         return True
-    return "channel_escalation" in parameters
+    parameter = parameters.get("channel_escalation")
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
 
 
 class Connection(AbstractConnection):
