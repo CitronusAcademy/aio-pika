@@ -15,6 +15,20 @@ Unreleased
   signature keep working: escalation kwargs are passed only when the class
   accepts them, and a warning is logged when automatic escalation cannot be
   applied.
+* Fixed `RobustChannel.restore()` hanging forever when a redeclare RPC
+  (`basic_qos`, `queue_declare`, `queue_bind`, `basic_consume`, ...) never
+  gets a response from the broker after a reconnect; it now times out
+  (`RESTORE_TIMEOUT`, default 5s), retries a bounded number of times
+  (`RESTORE_RETRY_ATTEMPTS`, default 5, with `RESTORE_RETRY_DELAY` between
+  attempts), and then raises instead of wedging the channel - and every
+  other channel on the same connection queued behind it - permanently
+* Fixed `message.process()` raising `ChannelInvalidStateError` (and masking
+  the caller's own exception) when the channel closes abruptly, instead of
+  logging and skipping the ack/reject as originally intended by #302 #688
+* Fixed consumer delivery-task failures being silently dropped into asyncio's
+  default loop exception handler instead of being logged via the `aio_pika`
+  logger
+
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`
