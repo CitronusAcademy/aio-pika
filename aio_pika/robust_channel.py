@@ -46,6 +46,9 @@ class RobustChannel(Channel, AbstractRobustChannel):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: bool = False,
+        channel_escalation_timeout: float = 5.0,
     ):
         """
 
@@ -63,6 +66,8 @@ class RobustChannel(Channel, AbstractRobustChannel):
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
+            channel_escalation=channel_escalation,
+            channel_escalation_timeout=channel_escalation_timeout,
         )
 
         self._exchanges = defaultdict()
@@ -135,6 +140,14 @@ class RobustChannel(Channel, AbstractRobustChannel):
             # will restore this channel via restore() -> reopen() -> _open()
             # which properly handles _closed state reset.
             self.__restored.clear()
+            return exc
+
+        if self._escalation_scheduled:
+            # A fatal channel close is terminal after escalation has claimed
+            # the owning connection; do not let robust recovery hide it.
+            self.__restored.clear()
+            if not self._closed.done():
+                self._closed.set_result(True)
             return exc
 
         in_restore_state = not self.__restored.is_set()

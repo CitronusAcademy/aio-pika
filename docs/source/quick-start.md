@@ -21,6 +21,36 @@ default exchange.
 :language: python
 ```
 
+## Escalating independent channel failures
+
+Unexpected independent channel failures close the owning connection by default.
+This fork's policy is automatic: a failure on one channel affects every channel
+sharing that connection. With a robust connection, the connection then follows
+its normal reconnect and channel-restoration flow.
+
+```python
+# Unexpected independent channel failures close the owning connection by default.
+connection = await aio_pika.connect_robust(
+    url,
+    channel_escalation=True,
+    channel_escalation_timeout=5.0,
+)
+
+# Deliberately preserve isolated/legacy behavior for this channel.
+legacy_channel = connection.channel(channel_escalation=False)
+```
+
+`channel_escalation` defaults to `True`. Pass `False` when creating an
+individual channel to opt that channel out while leaving the connection-wide
+policy enabled for other channels. Explicit channel or connection shutdown is
+not an independent failure and does not trigger escalation.
+
+`channel_escalation_timeout` is the maximum time escalation waits for the
+owning connection's close handling. It bounds escalation waiting; it does not
+forcibly complete every underlying transport close. Cleanup and robust
+recovery may therefore continue after the timeout. This is an intentional
+Citronus fork policy and is not the upstream aio-pika default.
+
 ## Asynchronous message processing
 
 Consume messages using a callback function instead of an async iterator.

@@ -78,6 +78,8 @@ class TestCase:
 
     async def test_kwargs_values(self):
         for parameter in self.CONNECTION_CLASS.PARAMETERS:
+            if parameter.strict:
+                continue
             positives = VALUE_GENERATORS[parameter.parser]  # type: ignore
             for example, expected in positives.items():  # type: ignore
                 instance = await self.get_instance(
@@ -149,3 +151,67 @@ def test_robust_connection_happy_eyeballs_delay(amqp_url: URL):
 
     connection = RobustConnection(url=amqp_url)
     assert "happy_eyeballs_delay" not in connection.kwargs
+
+
+# ---------------------------------------------------------------------------
+# Channel escalation connection settings
+# ---------------------------------------------------------------------------
+
+
+def test_channel_escalation_defaults():
+    """Default settings when no params are provided."""
+    connection = Connection(URL("amqp://guest:guest@localhost/"))
+    assert connection.channel_escalation is True
+    assert connection.channel_escalation_timeout == 5.0
+
+
+def test_channel_escalation_url_overrides():
+    """URL query parameters override defaults."""
+    connection = Connection(
+        URL(
+            "amqp://guest:guest@localhost/?channel_escalation=0"
+            "&channel_escalation_timeout=2.5"
+        ),
+    )
+    assert connection.channel_escalation is False
+    assert connection.channel_escalation_timeout == 2.5
+
+
+def test_channel_escalation_kwargs():
+    """Keyword arguments override both defaults and URL params."""
+    connection = Connection(
+        URL("amqp://guest:guest@localhost/"),
+        channel_escalation=False,
+        channel_escalation_timeout=1.25,
+    )
+    assert connection.channel_escalation is False
+    assert connection.channel_escalation_timeout == 1.25
+
+
+def test_robust_channel_escalation_defaults():
+    """Robust connection defaults match Connection defaults."""
+    connection = RobustConnection(URL("amqp://guest:guest@localhost/"))
+    assert connection.channel_escalation is True
+    assert connection.channel_escalation_timeout == 5.0
+
+
+def test_robust_channel_escalation_url_overrides():
+    """Robust connection URL overrides work."""
+    url = URL(
+        "amqp://guest:guest@localhost/?channel_escalation=0"
+        "&channel_escalation_timeout=2.5",
+    )
+    connection = RobustConnection(url=url)
+    assert connection.channel_escalation is False
+    assert connection.channel_escalation_timeout == 2.5
+
+
+def test_channel_escalation_not_in_kwargs():
+    """Channel escalation params are not passed to aiormq."""
+    connection = Connection(
+        URL("amqp://guest:guest@localhost/"),
+        channel_escalation=False,
+        channel_escalation_timeout=1.25,
+    )
+    assert "channel_escalation" not in connection.kwargs
+    assert "channel_escalation_timeout" not in connection.kwargs

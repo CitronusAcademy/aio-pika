@@ -1,6 +1,20 @@
 Unreleased
 ----------
 
+* Added automatic channel escalation by default: unexpected independent
+  channel failures close the owning connection, affecting every channel that
+  shares it. Robust connections recover by reconnecting and restoring channels;
+  pass `channel_escalation=False` to opt out for an individual channel. The
+  compatibility method `Channel.escalate_on_close()` remains available as a
+  secondary compatibility interface. This is an intentional Citronus fork
+  policy and diverges from upstream aio-pika.
+* Escalation timeout no longer latches the channel: a timed-out connection
+  close keeps running, its late failure is logged, and a later channel
+  failure escalates again.
+* Custom `CHANNEL_CLASS` implementations with the pre-escalation `__init__`
+  signature keep working: escalation kwargs are passed only when the class
+  accepts them, and a warning is logged when automatic escalation cannot be
+  applied.
 * Fixed `RobustChannel.restore()` hanging forever when a redeclare RPC
   (`basic_qos`, `queue_declare`, `queue_bind`, `basic_consume`, ...) never
   gets a response from the broker after a reconnect; it now times out
@@ -14,6 +28,7 @@ Unreleased
 * Fixed consumer delivery-task failures being silently dropped into asyncio's
   default loop exception handler instead of being logged via the `aio_pika`
   logger
+
 * Fork: replaced the real-PyPI trusted-publishing workflow with a manual
   `workflow_dispatch` workflow that publishes to our private index at
   `pypi.citronus.pro`

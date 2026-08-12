@@ -14,6 +14,7 @@ from .abc import (
     ConnectionParameter,
     SSLOptions,
     TimeoutType,
+    UnderlayConnection,
 )
 from .connection import Connection, make_url
 from .exceptions import CONNECTION_EXCEPTIONS
@@ -83,6 +84,19 @@ class RobustConnection(Connection, AbstractRobustConnection):
             f'<{self.__class__.__name__}: "{self}" '
             f"{len(self.__channels)} channels>"
         )
+
+    async def _close_transport_for_channel_failure(
+        self,
+        transport: Optional[UnderlayConnection],
+        exc: Optional[BaseException],
+    ) -> None:
+        try:
+            if transport is not None:
+                await transport.close(exc)
+        finally:
+            self.connected.clear()
+            if not self._close_called and not self.is_closed:
+                self.__connection_close_event.set()
 
     async def _on_connection_close(self, closing: asyncio.Future) -> None:
         try:
@@ -235,12 +249,17 @@ class RobustConnection(Connection, AbstractRobustConnection):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: Optional[bool] = None,
+        channel_escalation_timeout: Optional[float] = None,
     ) -> AbstractRobustChannel:
 
         channel: AbstractRobustChannel = super().channel(
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
+            channel_escalation=channel_escalation,
+            channel_escalation_timeout=channel_escalation_timeout,
         )  # type: ignore
 
         self.__channels.add(channel)

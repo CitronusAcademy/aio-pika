@@ -1,5 +1,8 @@
 import asyncio
 import contextlib
+import inspect
+import math
+from functools import lru_cache
 from ssl import SSLContext
 from types import TracebackType
 from typing import (
@@ -17,7 +20,7 @@ from typing import (
 
 
 import aiormq.abc
-from aiormq.connection import parse_int
+from aiormq.connection import parse_bool, parse_int
 from pamqp.common import FieldTable
 from yarl import URL
 
@@ -40,6 +43,25 @@ T = TypeVar("T")
 ConnectionType = TypeVar("ConnectionType", bound=AbstractConnection)
 
 
+@lru_cache(maxsize=None)
+def _channel_class_supports_escalation(channel_class: type) -> bool:
+    try:
+        signature = inspect.signature(channel_class)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return True
+    parameter = parameters.get("channel_escalation")
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+
+
 class Connection(AbstractConnection):
     """Connection abstraction"""
 
@@ -55,9 +77,22 @@ class Connection(AbstractConnection):
             parser=float,
             is_kwarg=True,
         ),
+        ConnectionParameter(
+            name="channel_escalation",
+            parser=parse_bool,
+            default=True,
+        ),
+        ConnectionParameter(
+            name="channel_escalation_timeout",
+            parser=float,
+            default=5.0,
+            strict=True,
+        ),
     )
 
     _closed: asyncio.Future
+    _channel_failure_close_task: Optional[asyncio.Task[None]]
+    _channel_failure_close_generation: int
 
     @property
     def is_closed(self) -> bool:
@@ -67,17 +102,85 @@ class Connection(AbstractConnection):
     def close_called(self) -> bool:
         return self._close_called
 
+    def _mark_close_called(self) -> None:
+        self._close_called = True
+
+    def _reset_close_called(self) -> None:
+        self._close_called = False
+
     async def close(
         self,
         exc: Optional[aiormq.abc.ExceptionType] = ConnectionClosed,
     ) -> None:
         transport, self.transport = self.transport, None
         self._close_called = True
-        if not transport:
-            return
-        await transport.close(exc)
+        await self._close_transport(transport, exc)
+
+    async def _close_transport(
+        self,
+        transport: Optional[UnderlayConnection],
+        exc: Optional[aiormq.abc.ExceptionType],
+    ) -> None:
+        if transport:
+            try:
+                await transport.close(exc)
+            finally:
+                if not self._closed.done():
+                    self._closed.set_result(True)
+        elif not self._closed.done():
+            self._closed.set_result(True)
+
+    async def _close_transport_for_channel_failure(
+        self,
+        transport: Optional[UnderlayConnection],
+        exc: Optional[BaseException],
+    ) -> None:
+        await self._close_transport(transport, exc)
         if not self._closed.done():
             self._closed.set_result(True)
+
+    async def _close_from_channel_failure(
+        self,
+        exc: Optional[BaseException],
+    ) -> None:
+        task = self._channel_failure_close_task
+        generation = self._channel_failure_close_generation
+        if task is None:
+            transport, self.transport = self.transport, None
+            self._channel_failure_close_generation += 1
+            generation = self._channel_failure_close_generation
+            task = asyncio.create_task(
+                self._close_transport_for_channel_failure(transport, exc),
+            )
+            self._channel_failure_close_task = task
+            task.add_done_callback(
+                lambda completed: self._clear_channel_failure_close_task(
+                    completed,
+                    generation,
+                ),
+            )
+        try:
+            await asyncio.shield(task)
+        finally:
+            if (
+                task.done()
+                and self._channel_failure_close_task is task
+                and self._channel_failure_close_generation == generation
+            ):
+                self._channel_failure_close_task = None
+
+    def _clear_channel_failure_close_task(
+        self,
+        task: asyncio.Task[None],
+        generation: int,
+    ) -> None:
+        if not task.cancelled():
+            task.exception()
+        if (
+            self._channel_failure_close_task is task
+            and self._channel_failure_close_generation == generation
+        ):
+            self._channel_failure_close_task = None
 
     def closed(self) -> Awaitable[Literal[True]]:
         return self._closed
@@ -106,6 +209,8 @@ class Connection(AbstractConnection):
         self.transport = None
         self._closed = self.loop.create_future()
         self._close_called = False
+        self._channel_failure_close_task = None
+        self._channel_failure_close_generation = 0
 
         self.url = URL(url)
 
@@ -113,6 +218,20 @@ class Connection(AbstractConnection):
             kwargs or dict(self.url.query),
         )
         self.kwargs["context"] = ssl_context
+
+        self.channel_escalation = self.kwargs.pop("channel_escalation")
+        channel_escalation_timeout = self.kwargs.pop(
+            "channel_escalation_timeout",
+        )
+        if (
+            not math.isfinite(channel_escalation_timeout)
+            or channel_escalation_timeout <= 0
+        ):
+            raise ValueError(
+                "channel_escalation_timeout must be a positive finite number",
+            )
+        self.channel_escalation_timeout = channel_escalation_timeout
+
         self.close_callbacks = CallbackCollection(self)
         self.connected: asyncio.Event = asyncio.Event()
 
@@ -158,6 +277,9 @@ class Connection(AbstractConnection):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: Optional[bool] = None,
+        channel_escalation_timeout: Optional[float] = None,
     ) -> AbstractChannel:
         """Coroutine which returns new instance of :class:`Channel`.
 
@@ -215,13 +337,42 @@ class Connection(AbstractConnection):
         if not self.transport:
             raise RuntimeError("Connection was not opened")
 
+        escalation_enabled = (
+            self.channel_escalation
+            if channel_escalation is None
+            else channel_escalation
+        )
+        escalation_timeout = (
+            self.channel_escalation_timeout
+            if channel_escalation_timeout is None
+            else channel_escalation_timeout
+        )
+        if not math.isfinite(escalation_timeout) or escalation_timeout <= 0:
+            raise ValueError(
+                "channel_escalation_timeout must be a positive finite number",
+            )
+
         log.debug("Creating AMQP channel for connection: %r", self)
+
+        channel_kwargs: Dict[str, Any] = {}
+        if _channel_class_supports_escalation(self.CHANNEL_CLASS):
+            channel_kwargs.update(
+                channel_escalation=escalation_enabled,
+                channel_escalation_timeout=escalation_timeout,
+            )
+        elif escalation_enabled:
+            log.warning(
+                "Channel class %r does not accept channel_escalation; "
+                "automatic escalation is disabled for this channel",
+                self.CHANNEL_CLASS,
+            )
 
         channel = self.CHANNEL_CLASS(
             connection=self,
             channel_number=channel_number,
             publisher_confirms=publisher_confirms,
             on_return_raises=on_return_raises,
+            **channel_kwargs,
         )
 
         log.debug("Channel created: %r", channel)

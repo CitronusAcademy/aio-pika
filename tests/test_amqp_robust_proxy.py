@@ -4,7 +4,7 @@ import logging
 from contextlib import suppress
 from functools import partial
 from typing import Callable, List, Type, Optional
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import aiomisc
 import aiormq.exceptions
@@ -348,7 +348,7 @@ async def test_context_process_abrupt_channel_close(
     queue_name = get_random_name("test_connection")
     routing_key = get_random_name("rounting_key")
 
-    channel = await connection.channel()
+    channel = await connection.channel(channel_escalation=False)
     exchange = await declare_exchange(
         "direct",
         auto_delete=True,
@@ -1236,3 +1236,85 @@ async def test_close_does_not_hang_during_reconnect(event_loop):
     connect_task.cancel()
     with suppress(asyncio.CancelledError):
         await connect_task
+
+
+async def test_multiple_escalated_channels_close_connection_once(connection):
+    ch1: RobustChannel = await connection.channel()  # type: ignore
+    ch2: RobustChannel = await connection.channel()  # type: ignore
+    ch1.escalate_on_close(timeout=1)
+    ch2.escalate_on_close(timeout=1)
+    exc = RuntimeError("transport death")
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_exception(exc)
+
+    transport = connection.transport
+    assert transport is not None
+    original_close = type(transport).close
+    close_calls = []
+
+    async def close_spy(transport, close_exc):
+        close_calls.append(close_exc)
+        return await original_close(transport, close_exc)
+
+    with patch.object(type(transport), "close", close_spy):
+        await asyncio.gather(ch1._on_close(closing), ch2._on_close(closing))
+        tasks = (ch1._escalation_task, ch2._escalation_task)
+        await asyncio.wait_for(
+            asyncio.gather(*(task for task in tasks if task is not None)),
+            timeout=1,
+        )
+
+    assert close_calls == [exc]
+
+
+async def test_channel_death_during_reconnect_finishes_without_restore_hang(
+    connection,
+):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    restore = AsyncMock()
+    original_failure_close = connection._close_from_channel_failure
+    failure_close = AsyncMock()
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocking_close(exc):
+        close_started.set()
+        await release_close.wait()
+        await original_failure_close(exc)
+
+    failure_close.side_effect = blocking_close
+    exc = RuntimeError("channel death during reconnect")
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_exception(exc)
+
+    async with connection._reconnect_lock:
+        with (
+            patch.object(channel, "restore", restore),
+            patch.object(
+                connection, "_close_from_channel_failure", failure_close
+            ),
+        ):
+            await channel._on_close(closing)
+            await asyncio.wait_for(close_started.wait(), timeout=1)
+            task = channel._escalation_task
+            assert task is not None
+            release_close.set()
+            await asyncio.wait_for(task, timeout=1)
+
+    restore.assert_not_awaited()
+    failure_close.assert_awaited_once_with(exc)
+
+
+async def test_explicit_connection_close_race_does_not_duplicate_escalation(
+    connection,
+):
+    channel: RobustChannel = await connection.channel()  # type: ignore
+    channel.escalate_on_close(timeout=1)
+    await connection.close()
+    exc = RuntimeError("close race")
+    closing = asyncio.get_running_loop().create_future()
+    closing.set_exception(exc)
+    await channel._on_close(closing)
+    assert connection.is_closed
+    assert channel._escalation_task is None or channel._escalation_task.done()
