@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from typing import Any, Awaitable, List, Literal, Optional, cast
 from unittest import mock
 
@@ -8,7 +9,11 @@ from yarl import URL
 from aio_pika import Channel, Connection
 from aio_pika.robust_channel import RobustChannel
 from aio_pika.robust_connection import RobustConnection
-from aio_pika.abc import AbstractChannel, AbstractConnection
+from aio_pika.abc import (
+    AbstractChannel,
+    AbstractConnection,
+    AbstractRobustConnection,
+)
 from aio_pika.channel import log as channel_log
 from aio_pika.connection import _channel_class_supports_escalation
 
@@ -1043,3 +1048,14 @@ async def test_escalation_close_exception_is_consumed() -> None:
 # ---------------------------------------------------------------------------
 # Channel factory escalation setting override
 # ---------------------------------------------------------------------------
+
+
+def test_abstract_channel_factory_exposes_escalation_kwargs() -> None:
+    for connection_type in (AbstractConnection, AbstractRobustConnection):
+        signature = inspect.signature(connection_type.channel)
+        escalation = signature.parameters["channel_escalation"]
+        timeout = signature.parameters["channel_escalation_timeout"]
+        assert escalation.default is None
+        assert timeout.default is None
+        assert escalation.kind is inspect.Parameter.KEYWORD_ONLY
+        assert timeout.kind is inspect.Parameter.KEYWORD_ONLY

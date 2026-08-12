@@ -834,6 +834,9 @@ class AbstractConnection(PoolInstance, ABC):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: Optional[bool] = None,
+        channel_escalation_timeout: Optional[float] = None,
     ) -> AbstractChannel:
         raise NotImplementedError
 
@@ -977,6 +980,9 @@ class AbstractRobustConnection(AbstractConnection):
         channel_number: Optional[int] = None,
         publisher_confirms: bool = True,
         on_return_raises: bool = False,
+        *,
+        channel_escalation: Optional[bool] = None,
+        channel_escalation_timeout: Optional[float] = None,
     ) -> AbstractRobustChannel:
         raise NotImplementedError
 
