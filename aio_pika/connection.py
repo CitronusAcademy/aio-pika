@@ -46,7 +46,7 @@ ConnectionType = TypeVar("ConnectionType", bound=AbstractConnection)
 @lru_cache(maxsize=None)
 def _channel_class_supports_escalation(channel_class: type) -> bool:
     try:
-        signature = inspect.signature(channel_class.__init__)
+        signature = inspect.signature(channel_class)
     except (TypeError, ValueError):
         return True
     parameters = signature.parameters
